@@ -3,7 +3,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import admin from "firebase-admin";
 import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
-import { initializeApp as initializeClientApp } from "firebase/app";
 import fs from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,28 +21,27 @@ const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
 // Set environment variables for firebase-admin
 process.env.GOOGLE_CLOUD_PROJECT = firebaseConfig.projectId;
 
-// Initialize Firebase Admin (for token verification)
+// Initialize Firebase Admin (for token verification and administrative tasks)
+/**
+ * CRITICAL: We initialize without a name first to use the default app context,
+ * which is most reliable for ADC (Application Default Credentials).
+ */
 let adminApp: admin.app.App;
 try {
-  const appName = "user-project-app";
-  const existingApp = admin.apps.find(app => app?.name === appName);
-  
-  if (!existingApp) {
+  if (admin.apps.length === 0) {
     adminApp = admin.initializeApp({ 
       projectId: firebaseConfig.projectId 
-    }, appName);
-    console.log(`Firebase Admin initialized for project: ${firebaseConfig.projectId} (App: ${appName})`);
+    });
+    console.log(`Firebase Admin initialized (Default App) for project: ${firebaseConfig.projectId}`);
   } else {
-    adminApp = existingApp!;
+    adminApp = admin.apps[0]!;
     console.log(`Using existing Firebase Admin app: ${adminApp.name}`);
   }
 } catch (e: any) {
   console.error("Failed to initialize Firebase Admin:", e.message);
-  if (admin.apps.length > 0) {
-    adminApp = admin.apps[0]!;
-  } else {
-    adminApp = admin.initializeApp({ projectId: firebaseConfig.projectId });
-  }
+  // Fallback to a named app if default fails
+  const appName = "admin-fallback";
+  adminApp = admin.apps.find(app => app?.name === appName) || admin.initializeApp({ projectId: firebaseConfig.projectId }, appName);
 }
 
 // Initialize Firestore Helper using REST API
@@ -341,55 +339,46 @@ async function startServer() {
     }
 
     try {
-      // 1. Create user in Firebase Auth via REST API
-      const signUpResponse = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      // 1. Attempt to create user in Firebase Auth via Admin SDK first (More robust)
+      let uid: string;
+      let dbSuccess = false;
+      let authMethod = "admin-sdk";
+
+      try {
+        const userRecord = await admin.auth(adminApp).createUser({
           email,
           password,
           displayName: displayName || email.split('@')[0],
-          returnSecureToken: true
-        })
-      });
-
-      const signUpData: any = await signUpResponse.json();
-      
-      if (!signUpResponse.ok) {
-        const errorCode = signUpData.error?.message;
-        if (errorCode === 'EMAIL_EXISTS') {
-          throw new Error("Email này đã được sử dụng.");
-        } else if (errorCode?.includes('WEAK_PASSWORD')) {
-          throw new Error("Mật khẩu quá yếu.");
-        }
+          emailVerified: true
+        });
+        uid = userRecord.uid;
+        console.log(`[Admin] Successfully created user via Admin SDK: ${uid}`);
+      } catch (adminError: any) {
+        console.warn("[Admin] Admin SDK user creation failed, falling back to REST API:", adminError.message);
+        authMethod = "rest-api";
         
-        if (signUpData.error?.status === 'PERMISSION_DENIED' || signUpData.error?.message?.includes('Identity Toolkit API')) {
-          return res.status(500).json({ 
-            error: "Lỗi hệ thống: Identity Toolkit API chưa được kích hoạt.",
-            details: `Bạn PHẢI kích hoạt Identity Toolkit API.\n\nCách 1 (Dễ nhất): Vào Firebase Console -> Authentication -> Nhấn 'Get Started'.\nLink: https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication\n\nCách 2: Kích hoạt trực tiếp API tại Google Cloud Console.\nLink: https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`,
-            apiLink: `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication`
-          });
-        }
-        
-        throw new Error(signUpData.error?.message || "Lỗi khi tạo tài khoản");
-      }
-
-      const uid = signUpData.localId;
-      const idToken = signUpData.idToken;
-
-      // 2. Set emailVerified to true via REST API
-      try {
-        await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:update?key=${firebaseConfig.apiKey}`, {
+        // 2. Fallback to Firebase Auth via REST API using API Key
+        // This works because it's a "Public" signup style call
+        const signUpResponse = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            idToken,
-            emailVerified: true,
-            returnSecureToken: false
+            email,
+            password,
+            displayName: displayName || email.split('@')[0],
+            returnSecureToken: true
           })
         });
-      } catch (updateError) {
-        console.warn("Failed to set emailVerified via REST API:", updateError);
+
+        const signUpData: any = await signUpResponse.json();
+        
+        if (!signUpResponse.ok) {
+          const errorCode = signUpData.error?.message;
+          if (errorCode === 'EMAIL_EXISTS') throw new Error("Email này đã được sử dụng.");
+          if (errorCode?.includes('WEAK_PASSWORD')) throw new Error("Mật khẩu quá yếu.");
+          throw new Error(signUpData.error?.message || "Lỗi khi tạo tài khoản");
+        }
+        uid = signUpData.localId;
       }
       
       // 3. Create user document in Firestore (Optional on server)
@@ -402,7 +391,7 @@ async function startServer() {
         updatedAt: new Date().toISOString(),
       };
 
-      let dbSuccess = true;
+      dbSuccess = true;
       try {
         // Use the admin's token from the request to write to Firestore
         const adminToken = req.headers.authorization.split("Bearer ")[1];
@@ -498,9 +487,16 @@ async function startServer() {
         console.warn(`[Admin] Admin SDK Auth delete failed for ${uid}:`, ae.message);
         authError = ae.message;
         
-        // Handle Identity Toolkit API disabled
+        /**
+         * EXPLANATION FOR USER:
+         * You can ADD users but not DELETE them because:
+         * 1. ADDING: Uses a Public API (SignUp) which only needs an API Key.
+         * 2. DELETING: Uses a Restricted Administrative API that requires 
+         *    'Identity Toolkit API' to be ENABLED in your project settings.
+         */
         if (ae.message?.includes('identitytoolkit.googleapis.com') || ae.code === 'auth/internal-error') {
-          authError = `Identity Toolkit API chưa được kích hoạt cho dự án này. Vui lòng kích hoạt tại: https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`;
+          authError = "Identity Toolkit API chưa được kích hoạt. Bạn có thể THÊM người dùng vì đó là tính năng công khai, " +
+                     "nhưng để XÓA người dùng (tính năng quản trị), bạn PHẢI kích hoạt API này trong Console.";
         }
       }
 

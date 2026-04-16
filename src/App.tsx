@@ -504,18 +504,11 @@ export default function App() {
   const [activeDatabaseId, setActiveDatabaseId] = useState<string | null>(null);
   const [isFetchingUsers, setIsFetchingUsers] = useState(false);
   const [adminUserSearch, setAdminUserSearch] = useState('');
-  const [adminRoleFilter, setAdminRoleFilter] = useState<'all' | 'user' | 'admin'>('all');
+  const [adminRoleFilter, setAdminRoleFilter] = useState<'all' | 'user' | 'admin' | 'blocked'>('all');
   const [adminNewUserEmail, setAdminNewUserEmail] = useState('');
   const [adminNewUserPassword, setAdminNewUserPassword] = useState('');
   const [adminNewUserDisplayName, setAdminNewUserDisplayName] = useState('');
   const [adminNewUserRole, setAdminNewUserRole] = useState<'user' | 'admin'>('user');
-  const [blacklist, setBlacklist] = useState<any[]>([]);
-  const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
-  const [isAddingToBlacklist, setIsAddingToBlacklist] = useState(false);
-  const [isFetchingBlacklist, setIsFetchingBlacklist] = useState(false);
-  const [userSearchQuery, setUserSearchQuery] = useState('');
-  const [userSearchResults, setUserSearchResults] = useState<any[]>([]);
-  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [newPasswordValue, setNewPasswordValue] = useState('');
@@ -653,28 +646,6 @@ export default function App() {
                                currentUser.email?.toLowerCase() === "hoctap853@gmail.com";
           
           if (!userSnap.exists()) {
-            // Check for blacklist
-            let isBlacklisted = false;
-            
-            try {
-              const blacklistRef = doc(db, 'blacklist', currentUser.email || '');
-              const blacklistSnap = await getDoc(blacklistRef);
-              if (blacklistSnap.exists()) {
-                isBlacklisted = true;
-              }
-            } catch (authErr) {
-              console.warn("Failed to check blacklist:", authErr);
-            }
-
-            if (isBlacklisted && !isAdminEmail) {
-              console.warn("User is blacklisted, logging out...");
-              showToast("Tài khoản của bạn đã bị chặn truy cập.", 'error');
-              await signOut(auth);
-              setUser(null);
-              setIsAuthReady(true);
-              return;
-            }
-
             try {
               await setDoc(userRef, {
                 uid: currentUser.uid,
@@ -682,7 +653,8 @@ export default function App() {
                 displayName: currentUser.displayName,
                 photoURL: currentUser.photoURL,
                 createdAt: serverTimestamp(),
-                role: isAdminEmail ? 'admin' : 'user'
+                role: isAdminEmail ? 'admin' : 'user',
+                isBlocked: false
               }, { merge: true });
             } catch (writeError) {
               console.warn("Failed to create user doc:", writeError);
@@ -691,22 +663,10 @@ export default function App() {
           } else {
             const data = userSnap.data();
             
-            // Check for blacklist
-            let isBlacklisted = false;
-
-            try {
-              const blacklistRef = doc(db, 'blacklist', currentUser.email || '');
-              const blacklistSnap = await getDoc(blacklistRef);
-              if (blacklistSnap.exists()) {
-                isBlacklisted = true;
-              }
-            } catch (authErr) {
-              // Ignore errors here
-            }
-
-            if (isBlacklisted && !isAdminEmail) {
-              console.warn("Existing user blacklisted, logging out...");
-              showToast("Tài khoản của bạn đã bị chặn truy cập.", 'error');
+            // Check if user is blocked
+            if (data?.isBlocked && !isAdminEmail) {
+              console.warn("User is blocked, logging out...");
+              showToast("Tài khoản của bạn đã bị khóa bởi quản trị viên.", 'error');
               await signOut(auth);
               setUser(null);
               setIsAuthReady(true);
@@ -752,6 +712,40 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Real-time security listener: Force logout if blocked
+  useEffect(() => {
+    if (!user) return;
+
+    // Listen to user's own document
+    const userDocRef = doc(db, 'users', user.uid);
+    const unsubscribeUser = onSnapshot(userDocRef, async (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        
+        // CRITICAL: Admins are immune to blocking to prevent accidental lockout
+        const isAdminEmail = user.email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
+                             user.email?.toLowerCase() === "mrihachnach@gmail.com" || 
+                             user.email?.toLowerCase() === "admin@gmail.com" || 
+                             user.email?.toLowerCase() === "hoctap853@gmail.com";
+
+        if (data?.isBlocked && !isAdminEmail) {
+          console.warn("User has been blocked remotely. Logging out...");
+          showToast("Tài khoản của bạn đã bị khóa bởi quản trị viên.", 'error');
+          await signOut(auth);
+          return;
+        }
+
+        if (data?.role !== userRole && userRole !== null) {
+          setUserRole(data?.role || 'user');
+        }
+      }
+    });
+
+    return () => {
+      unsubscribeUser();
+    };
+  }, [user, userRole]);
 
   // Perform key check when user logs in and keys are loaded
   useEffect(() => {
@@ -878,87 +872,6 @@ export default function App() {
     }
   };
 
-  const fetchBlacklist = async () => {
-    if (userRole !== 'admin') return;
-    setIsFetchingBlacklist(true);
-    try {
-      const querySnapshot = await getDocs(collection(db, 'blacklist'));
-      const emails = querySnapshot.docs.map(doc => ({
-        email: doc.id,
-        ...doc.data()
-      }));
-      setBlacklist(emails);
-    } catch (error) {
-      console.error("Error fetching blacklist:", error);
-    } finally {
-      setIsFetchingBlacklist(false);
-    }
-  };
-
-  const addToBlacklist = async (emailToBlacklist?: string) => {
-    const email = (emailToBlacklist || newBlacklistEmail).toLowerCase().trim();
-    if (userRole !== 'admin' || !email) return;
-
-    // Don't allow blacklisting admins
-    const isAdminEmail = email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
-                         email?.toLowerCase() === "mrihachnach@gmail.com" || 
-                         email?.toLowerCase() === "admin@gmail.com" || 
-                         email?.toLowerCase() === "hoctap853@gmail.com";
-    if (isAdminEmail) {
-      showToast("Không thể chặn tài khoản quản trị viên.", 'error');
-      return;
-    }
-
-    setIsAddingToBlacklist(true);
-    try {
-      await setDoc(doc(db, 'blacklist', email), {
-        createdAt: serverTimestamp(),
-        addedBy: user?.uid
-      });
-      setNewBlacklistEmail('');
-      showToast(`Đã thêm ${email} vào danh sách đen.`, 'success');
-      await fetchBlacklist();
-    } catch (error: any) {
-      showToast("Lỗi khi thêm vào danh sách đen: " + error.message, 'error');
-    } finally {
-      setIsAddingToBlacklist(false);
-    }
-  };
-
-  const removeFromBlacklist = async (email: string) => {
-    if (userRole !== 'admin') return;
-    try {
-      await deleteDoc(doc(db, 'blacklist', email));
-      showToast(`Đã xóa ${email} khỏi danh sách đen.`, 'success');
-      await fetchBlacklist();
-    } catch (error: any) {
-      console.error("Lỗi khi xóa khỏi danh sách đen:", error.message);
-    }
-  };
-
-  const searchUsers = async () => {
-    if (userRole !== 'admin' || !userSearchQuery.trim()) return;
-    setIsSearchingUsers(true);
-    try {
-      const q = query(
-        collection(db, 'users'), 
-        where('email', '>=', userSearchQuery.toLowerCase()),
-        where('email', '<=', userSearchQuery.toLowerCase() + '\uf8ff')
-      );
-      const snapshot = await getDocs(q);
-      const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setUserSearchResults(results);
-      if (results.length === 0) {
-        showToast("Không tìm thấy người dùng nào.", 'info');
-      }
-    } catch (error: any) {
-      console.error("Search users failed:", error);
-      showToast("Lỗi tìm kiếm: " + error.message, 'error');
-    } finally {
-      setIsSearchingUsers(false);
-    }
-  };
-
   const fetchAllUsers = async () => {
     if (userRole !== 'admin' || !user) return;
     setIsFetchingUsers(true);
@@ -1076,50 +989,30 @@ export default function App() {
     }
   };
 
-  const deleteUser = async (uid: string, email: string) => {
+  const toggleBlockUser = async (uid: string, email: string, currentBlocked: boolean) => {
     if (userRole !== 'admin' || !user) return;
     
+    // Don't allow blocking admins
+    const isAdminEmail = email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
+                         email?.toLowerCase() === "mrihachnach@gmail.com" || 
+                         email?.toLowerCase() === "admin@gmail.com" || 
+                         email?.toLowerCase() === "hoctap853@gmail.com";
+    if (isAdminEmail && !currentBlocked) {
+      showToast("Không thể chặn tài khoản quản trị viên.", 'error');
+      return;
+    }
+
     try {
-      const token = await user.getIdToken();
-      const response = await fetch('/api/admin/delete-user', {
-        method: 'POST',
-        headers: { 
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ uid, email })
+      await updateDoc(doc(db, 'users', uid), {
+        isBlocked: !currentBlocked,
+        updatedAt: serverTimestamp()
       });
       
-      const data = await response.json();
-      
-      if (response.ok && data.success) {
-        showToast(data.message || "Đã xóa người dùng thành công", data.authDeleted ? 'success' : 'info');
-      } else {
-        // Even if server-side Auth delete fails (e.g. API disabled), 
-        // we should try to delete from Firestore from the client
-        console.warn("Server-side deletion incomplete, attempting client-side Firestore cleanup...");
-        try {
-          await deleteDoc(doc(db, 'users', uid));
-          if (email) {
-            await setDoc(doc(db, 'blacklist', email.toLowerCase()), {
-              email: email.toLowerCase(),
-              uid: uid,
-              reason: "Deleted by admin (client-side fallback)",
-              createdAt: serverTimestamp()
-            });
-          }
-          
-          showToast("Đã chặn truy cập và xóa dữ liệu người dùng thành công.", 'success');
-        } catch (clientDbError: any) {
-          console.error("Client-side DB delete failed:", clientDbError);
-          showToast("Lỗi xóa: " + (data.error || "Không thể xóa người dùng"), 'error');
-        }
-      }
-      
+      showToast(currentBlocked ? `Đã khôi phục tài khoản ${email}` : `Đã chặn tài khoản ${email}`, 'success');
       await fetchAllUsers();
     } catch (error: any) {
-      console.error("Error deleting user:", error);
-      showToast("Lỗi kết nối khi xóa người dùng", 'error');
+      console.error("Error toggling block status:", error);
+      showToast("Lỗi khi cập nhật trạng thái tài khoản", 'error');
     }
   };
 
@@ -2780,7 +2673,6 @@ export default function App() {
               onClick={() => {
                 setShowAdminPanel(true);
                 fetchAllUsers();
-                fetchBlacklist();
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 text-white rounded-full transition-all text-[10px] font-bold uppercase tracking-wider shadow-sm hover:bg-amber-600"
               title="Quản trị hệ thống"
@@ -3902,7 +3794,6 @@ export default function App() {
                             setShowSettings(false);
                             setShowAdminPanel(true);
                             fetchAllUsers();
-                            fetchBlacklist();
                           }}
                           className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded-lg text-[10px] font-bold hover:bg-amber-200 transition-all"
                         >
@@ -4566,434 +4457,292 @@ export default function App() {
                   </div>
                   <div className="bg-rose-50 p-5 rounded-3xl border border-rose-100 shadow-sm">
                     <div className="flex items-center gap-3 mb-2">
-                      <div className="bg-rose-100 p-2 rounded-xl">
-                        <ShieldAlert className="w-4 h-4 text-rose-600" />
+                        <div className="bg-rose-100 p-2 rounded-xl">
+                          <ShieldAlert className="w-4 h-4 text-rose-600" />
+                        </div>
+                        <span className="text-[10px] font-black text-rose-400 uppercase tracking-widest">Tài khoản bị chặn</span>
                       </div>
-                      <span className="text-[10px] font-black text-rose-400 uppercase tracking-widest">Danh sách đen</span>
-                    </div>
-                    <p className="text-3xl font-display font-black text-rose-900">{blacklist.length}</p>
-                  </div>
-                </div>
-
-                {/* Blacklist Section */}
-                <section>
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-4 bg-rose-500 rounded-full" />
-                      <h4 className="text-sm font-bold text-slate-800">Danh sách đen (Blacklist)</h4>
-                    </div>
-                    <button 
-                      onClick={fetchBlacklist}
-                      className="p-1.5 hover:bg-slate-100 text-slate-500 rounded-lg transition-colors"
-                    >
-                      <RefreshCcw className={cn("w-3.5 h-3.5", isFetchingBlacklist && "animate-spin")} />
-                    </button>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50 p-5 rounded-2xl border border-slate-100 mb-4">
-                    <div className="space-y-1.5 md:col-span-3">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Thêm email vào danh sách đen</label>
-                      <input 
-                        type="email"
-                        placeholder="VD: user@hospital.com"
-                        value={newBlacklistEmail}
-                        onChange={(e) => setNewBlacklistEmail(e.target.value)}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-rose-500 outline-none transition-all"
-                      />
-                    </div>
-                    <div className="flex items-end">
-                      <button 
-                        onClick={() => addToBlacklist()}
-                        disabled={isAddingToBlacklist || !newBlacklistEmail}
-                        className="w-full py-2.5 bg-rose-600 text-white rounded-xl hover:bg-rose-700 transition-all disabled:opacity-50 shadow-lg shadow-rose-100 flex items-center justify-center gap-2"
-                      >
-                        {isAddingToBlacklist ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />}
-                        <span className="text-xs font-bold">Chặn</span>
-                      </button>
+                      <p className="text-3xl font-display font-black text-rose-900">{allUsers.filter(u => u.isBlocked).length}</p>
                     </div>
                   </div>
 
-                  {/* User Search for Blacklist */}
-                  <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-4 shadow-sm">
+                  {/* Create User Section */}
+                  <section>
                     <div className="flex items-center gap-2 mb-4">
-                      <Search className="w-4 h-4 text-slate-400" />
-                      <h5 className="text-xs font-bold text-slate-700">Tìm kiếm người dùng để chặn</h5>
+                      <div className="w-1.5 h-4 bg-indigo-500 rounded-full" />
+                      <h4 className="text-sm font-bold text-slate-800">Thêm người dùng mới</h4>
                     </div>
-                    <div className="flex gap-2 mb-4">
-                      <input 
-                        type="text"
-                        placeholder="Nhập email người dùng..."
-                        value={userSearchQuery}
-                        onChange={(e) => setUserSearchQuery(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && searchUsers()}
-                        className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                      />
-                      <button 
-                        onClick={searchUsers}
-                        disabled={isSearchingUsers || !userSearchQuery}
-                        className="px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all disabled:opacity-50 text-xs font-bold"
-                      >
-                        {isSearchingUsers ? <Loader2 className="w-4 h-4 animate-spin" /> : "Tìm kiếm"}
-                      </button>
-                    </div>
-
-                    {userSearchResults.length > 0 && (
-                      <div className="space-y-2 max-h-40 overflow-y-auto no-scrollbar border-t border-slate-50 pt-4">
-                        {userSearchResults.map((u) => (
-                          <div key={u.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-xl transition-colors">
-                            <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden">
-                                {u.photoURL ? (
-                                  <img src={u.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                                ) : (
-                                  <UserIcon className="w-4 h-4 text-slate-400" />
-                                )}
-                              </div>
-                              <div>
-                                <p className="text-xs font-bold text-slate-700">{u.displayName || 'Người dùng'}</p>
-                                <p className="text-[10px] text-slate-400">{u.email}</p>
-                              </div>
-                            </div>
-                            <button 
-                              onClick={() => addToBlacklist(u.email)}
-                              className="px-3 py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-bold transition-colors"
-                            >
-                              Chặn truy cập
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm max-h-60 overflow-y-auto no-scrollbar">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-50/50 text-slate-400 font-bold uppercase tracking-widest border-b border-slate-100 sticky top-0 z-10">
-                        <tr>
-                          <th className="px-6 py-3">Email bị chặn</th>
-                          <th className="px-6 py-3">Ngày chặn</th>
-                          <th className="px-6 py-3 text-right">Hành động</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {blacklist.length === 0 ? (
-                          <tr>
-                            <td colSpan={3} className="px-6 py-8 text-center text-slate-400 italic">Chưa có tài khoản nào bị chặn</td>
-                          </tr>
-                        ) : (
-                          blacklist.map((ae) => (
-                            <tr key={ae.email} className="hover:bg-slate-50/30 transition-colors group">
-                              <td className="px-6 py-3 font-medium text-slate-700">{ae.email}</td>
-                              <td className="px-6 py-3 text-slate-400">
-                                {ae.createdAt?.seconds ? new Date(ae.createdAt.seconds * 1000).toLocaleDateString('vi-VN') : '---'}
-                              </td>
-                              <td className="px-6 py-3 text-right">
-                                <button 
-                                  onClick={() => removeFromBlacklist(ae.email)}
-                                  className="p-1.5 hover:bg-emerald-50 text-emerald-400 hover:text-emerald-500 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
-                                  title="Gỡ khỏi danh sách đen"
-                                >
-                                  <ShieldCheck className="w-3.5 h-3.5" />
-                                </button>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-
-                {/* Create User Section */}
-                <section>
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-1.5 h-4 bg-indigo-500 rounded-full" />
-                    <h4 className="text-sm font-bold text-slate-800">Thêm người dùng mới</h4>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 bg-slate-50 p-5 rounded-2xl border border-slate-100">
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Tên hiển thị</label>
-                      <input 
-                        type="text"
-                        placeholder="VD: Nguyễn Văn A"
-                        value={adminNewUserDisplayName}
-                        onChange={(e) => setAdminNewUserDisplayName(e.target.value)}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Email</label>
-                      <input 
-                        type="email"
-                        placeholder="email@example.com"
-                        value={adminNewUserEmail}
-                        onChange={(e) => setAdminNewUserEmail(e.target.value)}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Mật khẩu</label>
-                      <input 
-                        type="password"
-                        placeholder="••••••••"
-                        value={adminNewUserPassword}
-                        onChange={(e) => setAdminNewUserPassword(e.target.value)}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Vai trò</label>
-                      <select 
-                        value={adminNewUserRole}
-                        onChange={(e) => setAdminNewUserRole(e.target.value as 'user' | 'admin')}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all appearance-none cursor-pointer"
-                      >
-                        <option value="user">Người dùng</option>
-                        <option value="admin">Quản trị viên</option>
-                      </select>
-                    </div>
-                    <div className="flex items-end">
-                      <button 
-                        onClick={async () => {
-                          if (!adminNewUserEmail || !adminNewUserPassword) {
-                            showToast("Vui lòng nhập email và mật khẩu", 'error');
-                            return;
-                          }
-                          setIsCreatingUser(true);
-                          try {
-                            await createNewUser({
-                              email: adminNewUserEmail,
-                              password: adminNewUserPassword,
-                              displayName: adminNewUserDisplayName,
-                              role: adminNewUserRole
-                            });
-                            showToast("Đã thêm người dùng thành công", 'success');
-                            setAdminNewUserEmail('');
-                            setAdminNewUserPassword('');
-                            setAdminNewUserDisplayName('');
-                          } catch (e: any) {
-                            if (e.message.includes("Identity Toolkit API")) {
-                              showToast("Lỗi: Identity Toolkit API chưa được kích hoạt. Vui lòng kiểm tra cấu hình dự án.", 'error');
-                            } else {
-                              showToast(e.message, 'error');
-                            }
-                          } finally {
-                            setIsCreatingUser(false);
-                          }
-                        }}
-                        disabled={isCreatingUser}
-                        className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-indigo-200"
-                      >
-                        {isCreatingUser ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
-                        Thêm ngay
-                      </button>
-                    </div>
-                  </div>
-                </section>
-
-                {/* User List Section */}
-                <section>
-                  <div className="flex items-center justify-between mb-4">
-                    <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                      <Users className="w-3.5 h-3.5" />
-                      Danh sách người dùng ({allUsers.length})
-                    </h4>
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" />
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Tên hiển thị</label>
                         <input 
                           type="text"
-                          placeholder="Tìm kiếm email/tên..."
-                          value={adminUserSearch}
-                          onChange={(e) => setAdminUserSearch(e.target.value)}
-                          className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] focus:ring-2 focus:ring-indigo-500 outline-none w-40 transition-all"
+                          placeholder="VD: Nguyễn Văn A"
+                          value={adminNewUserDisplayName}
+                          onChange={(e) => setAdminNewUserDisplayName(e.target.value)}
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
                         />
                       </div>
-                      <select 
-                        value={adminRoleFilter}
-                        onChange={(e) => setAdminRoleFilter(e.target.value as any)}
-                        className="px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] focus:ring-2 focus:ring-indigo-500 outline-none transition-all appearance-none cursor-pointer pr-6"
-                      >
-                        <option value="all">Tất cả vai trò</option>
-                        <option value="user">Người dùng</option>
-                        <option value="admin">Quản trị viên</option>
-                      </select>
-                      {(activeProjectId || activeDatabaseId) && (
-                        <div className="hidden md:flex flex-col items-end mr-2 border-r border-slate-100 pr-2">
-                          <div className="text-[7px] font-mono text-slate-400 uppercase tracking-tighter">Project: {activeProjectId}</div>
-                          <div className="text-[7px] font-mono text-slate-400 uppercase tracking-tighter">DB: {activeDatabaseId}</div>
-                        </div>
-                      )}
-                      <button 
-                        onClick={runDiagnostics}
-                        disabled={isRunningDiagnostics}
-                        className="p-1.5 hover:bg-slate-100 text-slate-500 rounded-lg transition-colors flex items-center gap-1.5"
-                        title="Chẩn đoán hệ thống"
-                      >
-                        <Activity className={cn("w-3.5 h-3.5", isRunningDiagnostics && "animate-pulse")} />
-                        <span className="text-[10px] font-medium">Chẩn đoán</span>
-                      </button>
-                      <button 
-                        onClick={fetchAllUsers}
-                        className="p-1.5 hover:bg-slate-100 text-slate-500 rounded-lg transition-colors"
-                        title="Làm mới"
-                      >
-                        <RefreshCcw className={cn("w-3.5 h-3.5", isFetchingUsers && "animate-spin")} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {authSyncError && (
-                    <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-start gap-4">
-                      <div className="bg-white p-2 rounded-xl shadow-sm">
-                        <Activity className="w-4 h-4 text-slate-400" />
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Email</label>
+                        <input 
+                          type="email"
+                          placeholder="email@example.com"
+                          value={adminNewUserEmail}
+                          onChange={(e) => setAdminNewUserEmail(e.target.value)}
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                        />
                       </div>
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-700">Chế độ truy cập trực tiếp (Direct Access)</p>
-                        <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
-                          Ứng dụng đang kết nối trực tiếp với Firestore của bạn. Một số tính năng quản trị nâng cao (như đồng bộ hóa trạng thái xác thực) đang bị hạn chế do cấu hình Cloud Project.
-                        </p>
-                        {apiActivationLink && (
-                          <div className="mt-3 flex items-center gap-3">
-                            <a 
-                              href={apiActivationLink} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
-                            >
-                              Cấu hình Cloud Project <ExternalLink className="w-2.5 h-2.5" />
-                            </a>
-                            <button 
-                              onClick={() => setAuthSyncError(null)}
-                              className="text-[10px] font-bold text-slate-400 hover:text-slate-500"
-                            >
-                              Ẩn thông báo
-                            </button>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Mật khẩu</label>
+                        <input 
+                          type="password"
+                          placeholder="••••••••"
+                          value={adminNewUserPassword}
+                          onChange={(e) => setAdminNewUserPassword(e.target.value)}
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Vai trò</label>
+                        <select 
+                          value={adminNewUserRole}
+                          onChange={(e) => setAdminNewUserRole(e.target.value as 'user' | 'admin')}
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all appearance-none cursor-pointer"
+                        >
+                          <option value="user">Người dùng</option>
+                          <option value="admin">Quản trị viên</option>
+                        </select>
+                      </div>
+                      <div className="flex items-end">
+                        <button 
+                          onClick={async () => {
+                            if (!adminNewUserEmail || !adminNewUserPassword) {
+                              showToast("Vui lòng nhập email và mật khẩu", 'error');
+                              return;
+                            }
+                            setIsCreatingUser(true);
+                            try {
+                              await createNewUser({
+                                email: adminNewUserEmail,
+                                password: adminNewUserPassword,
+                                displayName: adminNewUserDisplayName,
+                                role: adminNewUserRole
+                              });
+                              showToast("Đã thêm người dùng thành công", 'success');
+                              setAdminNewUserEmail('');
+                              setAdminNewUserPassword('');
+                              setAdminNewUserDisplayName('');
+                            } catch (e: any) {
+                              if (e.message.includes("Identity Toolkit API")) {
+                                showToast("Lỗi: Identity Toolkit API chưa được kích hoạt. Vui lòng kiểm tra cấu hình dự án.", 'error');
+                              } else {
+                                showToast(e.message, 'error');
+                              }
+                            } finally {
+                              setIsCreatingUser(false);
+                            }
+                          }}
+                          disabled={isCreatingUser}
+                          className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-indigo-200"
+                        >
+                          {isCreatingUser ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
+                          Thêm ngay
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* User List Section */}
+                  <section>
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <Users className="w-3.5 h-3.5" />
+                        Danh sách người dùng ({allUsers.length})
+                      </h4>
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" />
+                          <input 
+                            type="text"
+                            placeholder="Tìm kiếm email/tên..."
+                            value={adminUserSearch}
+                            onChange={(e) => setAdminUserSearch(e.target.value)}
+                            className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] focus:ring-2 focus:ring-indigo-500 outline-none w-40 transition-all"
+                          />
+                        </div>
+                        <select 
+                          value={adminRoleFilter}
+                          onChange={(e) => setAdminRoleFilter(e.target.value as any)}
+                          className="px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] focus:ring-2 focus:ring-indigo-500 outline-none transition-all appearance-none cursor-pointer pr-6"
+                        >
+                          <option value="all">Tất cả</option>
+                          <option value="user">Thành viên</option>
+                          <option value="admin">Quản trị viên</option>
+                          <option value="blocked">Đã chặn</option>
+                        </select>
+                        {(activeProjectId || activeDatabaseId) && (
+                          <div className="hidden md:flex flex-col items-end mr-2 border-r border-slate-100 pr-2">
+                            <div className="text-[7px] font-mono text-slate-400 uppercase tracking-tighter">Project: {activeProjectId}</div>
+                            <div className="text-[7px] font-mono text-slate-400 uppercase tracking-tighter">DB: {activeDatabaseId}</div>
                           </div>
                         )}
+                        <button 
+                          onClick={runDiagnostics}
+                          disabled={isRunningDiagnostics}
+                          className="p-1.5 hover:bg-slate-100 text-slate-500 rounded-lg transition-colors flex items-center gap-1.5"
+                          title="Chẩn đoán hệ thống"
+                        >
+                          <Activity className={cn("w-3.5 h-3.5", isRunningDiagnostics && "animate-pulse")} />
+                          <span className="text-[10px] font-medium">Chẩn đoán</span>
+                        </button>
+                        <button 
+                          onClick={fetchAllUsers}
+                          className="p-1.5 hover:bg-slate-100 text-slate-500 rounded-lg transition-colors"
+                          title="Làm mới"
+                        >
+                          <RefreshCcw className={cn("w-3.5 h-3.5", isFetchingUsers && "animate-spin")} />
+                        </button>
                       </div>
                     </div>
-                  )}
 
-                  <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-slate-50/50 text-slate-400 font-bold uppercase tracking-widest border-b border-slate-100">
-                          <tr>
-                            <th className="px-6 py-4">Thông tin người dùng</th>
-                            <th className="px-6 py-4">Vai trò</th>
-                            <th className="px-6 py-4">Ngày tham gia</th>
-                            <th className="px-6 py-4 text-right">Hành động</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50">
-                          {allUsers
-                            .filter(u => {
-                              const searchMatch = (u.email || '').toLowerCase().includes(adminUserSearch.toLowerCase()) || 
-                                                 (u.displayName || '').toLowerCase().includes(adminUserSearch.toLowerCase());
-                              const roleMatch = adminRoleFilter === 'all' || u.role === adminRoleFilter;
-                              return searchMatch && roleMatch;
-                            })
-                            .length === 0 ? (
+                    <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-50/50 text-slate-400 font-bold uppercase tracking-widest border-b border-slate-100">
                             <tr>
-                              <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">
-                                Không tìm thấy người dùng phù hợp
-                              </td>
+                              <th className="px-6 py-4">Thông tin người dùng</th>
+                              <th className="px-6 py-4">Vai trò</th>
+                              <th className="px-6 py-4">Ngày tham gia</th>
+                              <th className="px-6 py-4 text-right">Hành động</th>
                             </tr>
-                          ) : (
-                            allUsers
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {allUsers
                               .filter(u => {
                                 const searchMatch = (u.email || '').toLowerCase().includes(adminUserSearch.toLowerCase()) || 
                                                    (u.displayName || '').toLowerCase().includes(adminUserSearch.toLowerCase());
-                                const roleMatch = adminRoleFilter === 'all' || u.role === adminRoleFilter;
+                                let roleMatch = true;
+                                if (adminRoleFilter === 'admin') roleMatch = u.role === 'admin';
+                                else if (adminRoleFilter === 'user') roleMatch = u.role === 'user';
+                                else if (adminRoleFilter === 'blocked') roleMatch = u.isBlocked === true;
                                 return searchMatch && roleMatch;
                               })
-                              .map((u) => (
-                              <tr key={u.uid} className="hover:bg-slate-50/30 transition-colors group">
-                                <td className="px-6 py-4">
-                                  <div className="flex items-center gap-3">
-                                    <div className="w-9 h-9 bg-gradient-to-br from-slate-100 to-slate-200 rounded-xl flex items-center justify-center text-xs font-black text-slate-500 shadow-inner">
-                                      {u.displayName ? u.displayName.charAt(0).toUpperCase() : u.email.charAt(0).toUpperCase()}
-                                    </div>
-                                    <div>
-                                      <div className="flex items-center gap-2">
-                                        <p className="font-bold text-slate-800 text-sm">{u.displayName || u.email.split('@')[0]}</p>
-                                      </div>
-                                      <p className="text-[10px] text-slate-400 font-medium">{u.email}</p>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4">
-                                  <span className={cn(
-                                    "px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider shadow-sm",
-                                    u.role === 'admin' 
-                                      ? "bg-amber-50 text-amber-600 border border-amber-100" 
-                                      : "bg-indigo-50 text-indigo-600 border border-indigo-100"
-                                  )}>
-                                    {u.role === 'admin' ? 'Quản trị viên' : 'Thành viên'}
-                                  </span>
-                                </td>
-                                <td className="px-6 py-4">
-                                  <div className="flex flex-col">
-                                    <span className="text-slate-600 font-medium">
-                                      {u.createdAt ? (typeof u.createdAt === 'string' ? new Date(u.createdAt).toLocaleDateString('vi-VN') : (u.createdAt._seconds ? new Date(u.createdAt._seconds * 1000).toLocaleDateString('vi-VN') : 'N/A')) : 'N/A'}
-                                    </span>
-                                    <span className="text-[9px] text-slate-300">
-                                      {u.uid.substring(0, 8)}...
-                                    </span>
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4 text-right">
-                                  <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button 
-                                      onClick={() => sendAdminPasswordResetEmail(u.email)}
-                                      className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors"
-                                      title="Gửi email đặt lại mật khẩu"
-                                    >
-                                      <Mail className="w-4 h-4" />
-                                    </button>
-                                    <button 
-                                      onClick={async () => {
-                                        const newPass = "12345678"; // Default reset password to avoid prompt()
-                                        try {
-                                          await resetUserPassword(u.uid, newPass);
-                                        } catch (e: any) {
-                                          console.error(e.message);
-                                        }
-                                      }}
-                                      className="p-2 hover:bg-amber-50 text-amber-600 rounded-lg transition-colors"
-                                      title="Đặt lại mật khẩu trực tiếp"
-                                    >
-                                      <KeyRound className="w-4 h-4" />
-                                    </button>
-                                    <button 
-                                      onClick={() => updateUserRole(u.uid, u.email, u.role === 'admin' ? 'user' : 'admin')}
-                                      className={cn(
-                                        "p-2 rounded-lg transition-colors",
-                                        u.role === 'admin' ? "hover:bg-indigo-50 text-indigo-600" : "hover:bg-amber-50 text-amber-600"
-                                      )}
-                                      title={u.role === 'admin' ? "Hạ cấp xuống Thành viên" : "Thăng cấp lên Quản trị viên"}
-                                    >
-                                      {u.role === 'admin' ? <UserIcon className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
-                                    </button>
-                                    <button 
-                                      onClick={() => deleteUser(u.uid, u.email)}
-                                      className="p-2 hover:bg-rose-50 text-rose-500 rounded-lg transition-colors"
-                                      title="Xóa người dùng"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
-                                  </div>
+                              .length === 0 ? (
+                              <tr>
+                                <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">
+                                  Không tìm thấy người dùng phù hợp
                                 </td>
                               </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
+                            ) : (
+                              allUsers
+                                .filter(u => {
+                                  const searchMatch = (u.email || '').toLowerCase().includes(adminUserSearch.toLowerCase()) || 
+                                                     (u.displayName || '').toLowerCase().includes(adminUserSearch.toLowerCase());
+                                  let roleMatch = true;
+                                  if (adminRoleFilter === 'admin') roleMatch = u.role === 'admin';
+                                  else if (adminRoleFilter === 'user') roleMatch = u.role === 'user';
+                                  else if (adminRoleFilter === 'blocked') roleMatch = u.isBlocked === true;
+                                  return searchMatch && roleMatch;
+                                })
+                                .map((u) => (
+                                <tr key={u.uid} className={cn(
+                                  "hover:bg-slate-50/30 transition-colors group",
+                                  u.isBlocked && "bg-rose-50/20"
+                                )}>
+                                  <td className="px-6 py-4">
+                                    <div className="flex items-center gap-3">
+                                      <div className={cn(
+                                        "w-9 h-9 bg-gradient-to-br rounded-xl flex items-center justify-center text-xs font-black text-slate-500 shadow-inner",
+                                        u.isBlocked ? "from-rose-100 to-rose-200" : "from-slate-100 to-slate-200"
+                                      )}>
+                                        {u.displayName ? u.displayName.charAt(0).toUpperCase() : u.email.charAt(0).toUpperCase()}
+                                      </div>
+                                      <div>
+                                        <div className="flex items-center gap-2">
+                                          <p className="font-bold text-slate-800 text-sm">{u.displayName || u.email.split('@')[0]}</p>
+                                          {u.isBlocked && (
+                                            <span className="bg-rose-100 text-rose-600 text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase tracking-tighter">Bị chặn</span>
+                                          )}
+                                        </div>
+                                        <p className="text-[10px] text-slate-400 font-medium">{u.email}</p>
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <span className={cn(
+                                      "px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider shadow-sm",
+                                      u.role === 'admin' 
+                                        ? "bg-amber-50 text-amber-600 border border-amber-100" 
+                                        : "bg-indigo-50 text-indigo-600 border border-indigo-100"
+                                    )}>
+                                      {u.role === 'admin' ? 'Quản trị viên' : 'Thành viên'}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <div className="flex flex-col">
+                                      <span className="text-slate-600 font-medium">
+                                        {u.createdAt ? (typeof u.createdAt === 'string' ? new Date(u.createdAt).toLocaleDateString('vi-VN') : (u.createdAt._seconds ? new Date(u.createdAt._seconds * 1000).toLocaleDateString('vi-VN') : 'N/A')) : 'N/A'}
+                                      </span>
+                                      <span className="text-[9px] text-slate-300">
+                                        {u.uid.substring(0, 8)}...
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4 text-right">
+                                    <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button 
+                                        onClick={() => sendAdminPasswordResetEmail(u.email)}
+                                        className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors"
+                                        title="Gửi email đặt lại mật khẩu"
+                                      >
+                                        <Mail className="w-4 h-4" />
+                                      </button>
+                                      <button 
+                                        onClick={async () => {
+                                          const newPass = "12345678"; // Default reset password to avoid prompt()
+                                          try {
+                                            await resetUserPassword(u.uid, newPass);
+                                          } catch (e: any) {
+                                            console.error(e.message);
+                                          }
+                                        }}
+                                        className="p-2 hover:bg-amber-50 text-amber-600 rounded-lg transition-colors"
+                                        title="Đặt lại mật khẩu trực tiếp"
+                                      >
+                                        <KeyRound className="w-4 h-4" />
+                                      </button>
+                                      <button 
+                                        onClick={() => updateUserRole(u.uid, u.email, u.role === 'admin' ? 'user' : 'admin')}
+                                        className={cn(
+                                          "p-2 rounded-lg transition-colors",
+                                          u.role === 'admin' ? "hover:bg-indigo-50 text-indigo-600" : "hover:bg-amber-50 text-amber-600"
+                                        )}
+                                        title={u.role === 'admin' ? "Hạ cấp xuống Thành viên" : "Thăng cấp lên Quản trị viên"}
+                                      >
+                                        {u.role === 'admin' ? <UserIcon className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
+                                      </button>
+                                      <button 
+                                        onClick={() => toggleBlockUser(u.uid, u.email, u.isBlocked)}
+                                        className={cn(
+                                          "p-2 rounded-lg transition-colors",
+                                          u.isBlocked ? "hover:bg-emerald-50 text-emerald-500" : "hover:bg-rose-50 text-rose-500"
+                                        )}
+                                        title={u.isBlocked ? "Bỏ chặn người dùng" : "Chặn người dùng"}
+                                      >
+                                        {u.isBlocked ? <ShieldCheck className="w-4 h-4" /> : <ShieldAlert className="w-4 h-4" />}
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  </div>
-                </section>
-              </div>
+                  </section>
+                </div>
 
               <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end">
                 <button 

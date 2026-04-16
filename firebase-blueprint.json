@@ -10,7 +10,8 @@
         "displayName": { "type": "string", "description": "The user's display name." },
         "photoURL": { "type": "string", "format": "uri", "description": "The user's profile picture URL." },
         "createdAt": { "type": "string", "format": "date-time", "description": "When the user account was created." },
-        "role": { "type": "string", "enum": ["admin", "user"], "description": "The user's role." }
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "The user's role." },
+        "isBlocked": { "type": "boolean", "description": "Whether the user is blocked." }
       },
       "required": ["uid", "email"]
     },

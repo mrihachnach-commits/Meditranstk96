@@ -91,13 +91,14 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'role', 'updatedAt']) &&
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'role', 'updatedAt', 'isBlocked']) &&
              data.uid is string && data.uid.size() > 0 &&
              data.email is string && isValidEmail(data.email) &&
              (data.displayName == null || (data.displayName is string && data.displayName.size() < 100)) &&
              (data.photoURL == null || (data.photoURL is string && isValidUrl(data.photoURL))) &&
              (data.createdAt == null || data.createdAt is timestamp) &&
-             (data.updatedAt == null || data.updatedAt is timestamp);
+             (data.updatedAt == null || data.updatedAt is timestamp) &&
+             (!('isBlocked' in data) || data.isBlocked is bool);
     }
 
     function isValidApiKey(data) {
