@@ -198,16 +198,18 @@ async function startServer() {
       // 2. Check Admin Status
       let userData: any = null;
       try {
-        // Use REST API with the user's token to check their own document
-        const userDoc = await firestoreRest.getDoc("users", decodedToken.uid, idToken);
+        // Use Admin SDK for server-side checks to bypass security rules
+        const db = getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
+        const userDoc = await db.collection("users").doc(decodedToken.uid).get();
+        
         if (!userDoc.exists) {
-          return res.status(403).json({ error: "Tài khoản của bạn đã bị xóa hoặc bị chặn." });
+          return res.status(403).json({ error: "Tài khoản của bạn chưa được thiết lập hoặc đã bị xóa." });
         }
-        userData = userDoc.data;
+        userData = userDoc.data();
         
         // Check blacklist
         if (decodedToken.email) {
-          const blacklistDoc = await firestoreRest.getDoc("blacklist", decodedToken.email.toLowerCase(), idToken);
+          const blacklistDoc = await db.collection("blacklist").doc(decodedToken.email.toLowerCase()).get();
           if (blacklistDoc.exists) {
             return res.status(403).json({ error: "Tài khoản của bạn đã bị chặn truy cập." });
           }
@@ -221,6 +223,8 @@ async function startServer() {
                              decodedToken.email?.toLowerCase() === "mrihachnach@gmail.com" || 
                              decodedToken.email?.toLowerCase() === "admin@gmail.com" ||
                              decodedToken.email?.toLowerCase() === "hoctap853@gmail.com";
+      
+      console.log(`[Admin Check] User ${decodedToken.email} isPrimaryAdmin: ${isPrimaryAdmin}`);
       
       const isAdmin = userData?.role === "admin" || isPrimaryAdmin;
 
@@ -448,14 +452,20 @@ async function startServer() {
 
   // Admin: List Users (Source from Firestore only to avoid project mismatch)
   app.get("/api/admin/list-users", checkAdmin, async (req, res) => {
-    const idToken = req.headers.authorization.split("Bearer ")[1];
     try {
-      const users = await firestoreRest.listDocs("users", idToken);
+      // Use Admin SDK for Firestore to bypass security rules for administrative tasks
+      const usersSnapshot = await getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId).collection("users").get();
+      const users = usersSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...(doc.data() as any)
+      }));
+      
       res.json({ 
         success: true, 
         users,
         projectId: firebaseConfig.projectId,
-        databaseId: firebaseConfig.firestoreDatabaseId
+        databaseId: firebaseConfig.firestoreDatabaseId,
+        source: "admin-sdk"
       });
     } catch (error: any) {
       console.error("[Admin] List users failed:", error.message);
@@ -475,22 +485,47 @@ async function startServer() {
   app.post("/api/admin/delete-user", checkAdmin, async (req, res) => {
     const { uid, email } = req.body;
     const idToken = req.headers.authorization.split("Bearer ")[1];
+    let authDeleted = false;
+    let authError = null;
+
     try {
-      // We only perform Soft Delete (Firestore + Blacklist) to avoid Identity Toolkit API issues
-      await firestoreRest.deleteDoc("users", uid, idToken);
+      // 1. Attempt to delete from Firebase Authentication using Admin SDK
+      try {
+        await admin.auth(adminApp).deleteUser(uid);
+        authDeleted = true;
+        console.log(`[Admin] Successfully deleted User Auth: ${uid}`);
+      } catch (ae: any) {
+        console.warn(`[Admin] Admin SDK Auth delete failed for ${uid}:`, ae.message);
+        authError = ae.message;
+        
+        // Handle Identity Toolkit API disabled
+        if (ae.message?.includes('identitytoolkit.googleapis.com') || ae.code === 'auth/internal-error') {
+          authError = `Identity Toolkit API chưa được kích hoạt cho dự án này. Vui lòng kích hoạt tại: https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`;
+        }
+      }
+
+      // 2. Delete Firestore document
+      const db = getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
+      await db.collection("users").doc(uid).delete();
       
+      // 3. Add to blacklist to prevent re-registration or access if Auth delete failed
       if (email) {
-        await firestoreRest.setDoc("blacklist", email.toLowerCase(), {
+        await db.collection("blacklist").doc(email.toLowerCase()).set({
           email: email.toLowerCase(),
           uid: uid,
           reason: "Deleted by admin",
+          authDeleted,
           createdAt: new Date().toISOString()
-        }, idToken);
+        });
       }
       
       res.json({ 
         success: true, 
-        message: "Đã chặn truy cập và xóa dữ liệu người dùng thành công."
+        authDeleted,
+        authError,
+        message: authDeleted 
+          ? "Đã xóa tài khoản khỏi hệ thống và xóa dữ liệu thành công." 
+          : "Đã xóa dữ liệu và chặn truy cập (Xóa Auth thất bại: " + authError + ")"
       });
     } catch (error: any) {
       console.error("[Admin] Error in delete-user route:", error);

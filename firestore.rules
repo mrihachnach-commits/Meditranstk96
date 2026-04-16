@@ -120,18 +120,22 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
-    match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
+    match /users {
       allow list: if isAdmin();
-      allow create: if isAuthenticated();
-      allow update: if (isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)) || isAdmin();
-      allow delete: if isAdmin();
+      match /{userId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isAuthenticated();
+        allow update: if (isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)) || isAdmin();
+        allow delete: if isAdmin();
+      }
     }
 
-    match /blacklist/{email} {
-      allow read: if isAuthenticated() && (request.auth.token.email == email || isAdmin());
+    match /blacklist {
       allow list: if isAdmin();
-      allow write: if isAdmin();
+      match /{email} {
+        allow read: if isAuthenticated() && (request.auth.token.email == email || isAdmin());
+        allow write: if isAdmin();
+      }
     }
 
     match /apiKeys/{keyId} {

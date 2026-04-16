@@ -15,7 +15,12 @@ import {
   Loader2,
   Search,
   ArrowLeft,
-  X
+  X,
+  ArrowUpDown,
+  SortAsc,
+  SortDesc,
+  Clock,
+  Type
 } from 'lucide-react';
 import { 
   db, 
@@ -79,6 +84,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
   
   const [showMoveModal, setShowMoveModal] = useState<{id: string, type: 'file' | 'folder'} | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'name' | 'date' | 'size'>('date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   const [openingFileId, setOpeningFileId] = useState<string | null>(null);
 
@@ -218,8 +225,45 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
     setCurrentFolderId(folderId);
   };
 
-  const filteredFolders = folders.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
-  const filteredFiles = files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  const sortedFolders = [...folders]
+    .filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => {
+      if (sortBy === 'name') {
+        return sortOrder === 'asc' 
+          ? a.name.localeCompare(b.name)
+          : b.name.localeCompare(a.name);
+      } else {
+        // Default to date for folders if size is selected
+        const dateA = a.createdAt?.toDate?.() || new Date(a.createdAt);
+        const dateB = b.createdAt?.toDate?.() || new Date(b.createdAt);
+        return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
+      }
+    });
+
+  const sortedFiles = [...files]
+    .filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => {
+      if (sortBy === 'name') {
+        return sortOrder === 'asc' 
+          ? a.name.localeCompare(b.name)
+          : b.name.localeCompare(a.name);
+      } else if (sortBy === 'size') {
+        return sortOrder === 'asc' ? a.size - b.size : b.size - a.size;
+      } else {
+        const dateA = a.createdAt?.toDate?.() || new Date(a.createdAt);
+        const dateB = b.createdAt?.toDate?.() || new Date(b.createdAt);
+        return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
+      }
+    });
+
+  const toggleSort = (type: 'name' | 'date' | 'size') => {
+    if (sortBy === type) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(type);
+      setSortOrder(type === 'name' ? 'asc' : 'desc');
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-100">
@@ -255,9 +299,46 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
               placeholder="Tìm kiếm..." 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all w-48"
+              className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all w-40"
             />
           </div>
+
+          <div className="flex bg-slate-50 p-1 rounded-xl border border-slate-100">
+            <button 
+              onClick={() => toggleSort('name')}
+              className={cn(
+                "p-1.5 rounded-lg transition-all flex items-center gap-1",
+                sortBy === 'name' ? "bg-white shadow-sm text-indigo-600" : "text-slate-400 hover:text-slate-600"
+              )}
+              title="Sắp xếp theo tên"
+            >
+              <Type className="w-4 h-4" />
+              {sortBy === 'name' && (sortOrder === 'asc' ? <SortAsc className="w-3 h-3" /> : <SortDesc className="w-3 h-3" />)}
+            </button>
+            <button 
+              onClick={() => toggleSort('date')}
+              className={cn(
+                "p-1.5 rounded-lg transition-all flex items-center gap-1",
+                sortBy === 'date' ? "bg-white shadow-sm text-indigo-600" : "text-slate-400 hover:text-slate-600"
+              )}
+              title="Sắp xếp theo thời gian"
+            >
+              <Clock className="w-4 h-4" />
+              {sortBy === 'date' && (sortOrder === 'asc' ? <SortAsc className="w-3 h-3" /> : <SortDesc className="w-3 h-3" />)}
+            </button>
+            <button 
+              onClick={() => toggleSort('size')}
+              className={cn(
+                "p-1.5 rounded-lg transition-all flex items-center gap-1",
+                sortBy === 'size' ? "bg-white shadow-sm text-indigo-600" : "text-slate-400 hover:text-slate-600"
+              )}
+              title="Sắp xếp theo dung lượng"
+            >
+              <ArrowUpDown className="w-4 h-4" />
+              {sortBy === 'size' && (sortOrder === 'asc' ? <SortAsc className="w-3 h-3" /> : <SortDesc className="w-3 h-3" />)}
+            </button>
+          </div>
+
           <button 
             onClick={() => setShowNewFolderModal(true)}
             className="p-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-all shadow-sm"
@@ -298,7 +379,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
             {/* Folders */}
-            {filteredFolders.map(folder => (
+            {sortedFolders.map(folder => (
               <motion.div 
                 key={folder.id}
                 initial={{ opacity: 0, scale: 0.9 }}
@@ -351,7 +432,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
             ))}
 
             {/* Files */}
-            {filteredFiles.map(file => (
+            {sortedFiles.map(file => (
               <motion.div 
                 key={file.id}
                 initial={{ opacity: 0, scale: 0.9 }}
