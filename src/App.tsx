@@ -1083,27 +1083,28 @@ export default function App() {
       
       const data = await response.json();
       
-      // Even if server-side Auth delete fails (e.g. API disabled), 
-      // we should try to delete from Firestore from the client
-      if (!response.ok || !data.success || !data.dbSuccess) {
+      if (response.ok && data.success) {
+        showToast(data.message || "Đã xóa người dùng thành công", data.authDeleted ? 'success' : 'info');
+      } else {
+        // Even if server-side Auth delete fails (e.g. API disabled), 
+        // we should try to delete from Firestore from the client
         console.warn("Server-side deletion incomplete, attempting client-side Firestore cleanup...");
         try {
           await deleteDoc(doc(db, 'users', uid));
           if (email) {
-            await deleteDoc(doc(db, 'blacklist', email.toLowerCase()));
+            await setDoc(doc(db, 'blacklist', email.toLowerCase()), {
+              email: email.toLowerCase(),
+              uid: uid,
+              reason: "Deleted by admin (client-side fallback)",
+              createdAt: serverTimestamp()
+            });
           }
           
-          if (data.isApiDisabled) {
-            showToast("Đã xóa khỏi Database. Lưu ý: Identity Toolkit API chưa bật nên chưa xóa được Auth.", 'info');
-          } else {
-            showToast("Đã xóa dữ liệu người dùng khỏi Database", 'info');
-          }
+          showToast("Đã chặn truy cập và xóa dữ liệu người dùng thành công.", 'success');
         } catch (clientDbError: any) {
           console.error("Client-side DB delete failed:", clientDbError);
           showToast("Lỗi xóa: " + (data.error || "Không thể xóa người dùng"), 'error');
         }
-      } else {
-        showToast("Đã xóa người dùng thành công", 'success');
       }
       
       await fetchAllUsers();

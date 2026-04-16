@@ -46,51 +46,122 @@ try {
   }
 }
 
-// Initialize Firestore with fallback logic
-let firestore: admin.firestore.Firestore;
-
-// Helper to get the right firestore instance
-async function getFirestoreInstance() {
-  // Use the specific database ID from config
-  const dbId = firebaseConfig.firestoreDatabaseId;
-  const projectId = firebaseConfig.projectId;
-  
-  console.log(`[Firestore] Initializing connection...`);
-  console.log(`[Firestore] Project ID: ${projectId}`);
-  console.log(`[Firestore] Database ID: ${dbId}`);
-  
-  try {
-    // Use getAdminFirestore with explicit app and database ID
-    const db = getAdminFirestore(adminApp, dbId);
+// Initialize Firestore Helper using REST API
+const firestoreRest = {
+  getDoc: async (collection: string, docId: string, idToken?: string) => {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/${collection}/${docId}`;
+    const headers: any = { 'Content-Type': 'application/json' };
+    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
     
-    // Test connection with a write operation
-    console.log(`[Firestore] Testing connection to ${dbId}...`);
-    await db.collection('test_connection').doc('server_init').set({ 
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      projectId: projectId,
-      databaseId: dbId,
-      status: 'connected'
+    const res = await fetch(url, { headers });
+    if (res.status === 404) return { exists: false };
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error?.message || "Firestore REST error");
+    }
+    const data = await res.json();
+    return { exists: true, data: parseFirestoreFields(data.fields) };
+  },
+  
+  setDoc: async (collection: string, docId: string, data: any, idToken?: string) => {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/${collection}/${docId}`;
+    const headers: any = { 'Content-Type': 'application/json' };
+    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+    
+    const body = { fields: encodeFirestoreFields(data) };
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(body)
     });
     
-    console.log(`[Firestore] Successfully connected to database: ${dbId}`);
-    return db;
-  } catch (e: any) {
-    console.error(`[Firestore] CRITICAL CONNECTION ERROR for database ${dbId}: ${e.message}`);
-    if (e.code === 7 || e.message?.includes('PERMISSION_DENIED')) {
-      console.error(`[Firestore] Permission denied. Please ensure Firestore API is enabled and Service Account has 'Cloud Datastore User' or 'Owner' role.`);
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error?.message || "Firestore REST error");
     }
-    // Return the instance anyway, operations will fail with descriptive errors
-    return getAdminFirestore(adminApp, dbId);
+    return await res.json();
+  },
+
+  deleteDoc: async (collection: string, docId: string, idToken?: string) => {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/${collection}/${docId}`;
+    const headers: any = { 'Content-Type': 'application/json' };
+    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+    
+    const res = await fetch(url, { method: 'DELETE', headers });
+    if (!res.ok && res.status !== 404) {
+      const error = await res.json();
+      throw new Error(error.error?.message || "Firestore REST error");
+    }
+    return true;
+  },
+
+  listDocs: async (collection: string, idToken?: string) => {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/${collection}`;
+    const headers: any = { 'Content-Type': 'application/json' };
+    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+    
+    console.log(`[Firestore REST] Listing ${collection} from ${url}`);
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      const error = await res.json();
+      console.error(`[Firestore REST] List failed:`, JSON.stringify(error));
+      throw new Error(error.error?.message || "Firestore REST error");
+    }
+    const data = await res.json();
+    return (data.documents || []).map((doc: any) => ({
+      id: doc.name.split('/').pop(),
+      ...parseFirestoreFields(doc.fields)
+    }));
   }
+};
+
+// Helper to parse Firestore REST fields
+function parseFirestoreFields(fields: any) {
+  if (!fields) return {};
+  const result: any = {};
+  for (const key in fields) {
+    const valueObj = fields[key];
+    if ('stringValue' in valueObj) result[key] = valueObj.stringValue;
+    else if ('integerValue' in valueObj) result[key] = parseInt(valueObj.integerValue);
+    else if ('doubleValue' in valueObj) result[key] = valueObj.doubleValue;
+    else if ('booleanValue' in valueObj) result[key] = valueObj.booleanValue;
+    else if ('timestampValue' in valueObj) result[key] = valueObj.timestampValue;
+    else if ('mapValue' in valueObj) result[key] = parseFirestoreFields(valueObj.mapValue.fields);
+    else if ('arrayValue' in valueObj) {
+      result[key] = (valueObj.arrayValue.values || []).map((v: any) => {
+        const temp = parseFirestoreFields({ temp: v });
+        return temp.temp;
+      });
+    }
+  }
+  return result;
+}
+
+// Helper to encode Firestore REST fields
+function encodeFirestoreFields(data: any) {
+  const fields: any = {};
+  for (const key in data) {
+    const val = data[key];
+    if (typeof val === 'string') fields[key] = { stringValue: val };
+    else if (typeof val === 'number') {
+      if (Number.isInteger(val)) fields[key] = { integerValue: val.toString() };
+      else fields[key] = { doubleValue: val };
+    }
+    else if (typeof val === 'boolean') fields[key] = { booleanValue: val };
+    else if (val instanceof Date) fields[key] = { timestampValue: val.toISOString() };
+    else if (Array.isArray(val)) {
+      fields[key] = { arrayValue: { values: val.map(v => encodeFirestoreFields({ temp: v }).temp) } };
+    }
+    else if (typeof val === 'object' && val !== null) {
+      fields[key] = { mapValue: { fields: encodeFirestoreFields(val) } };
+    }
+  }
+  return fields;
 }
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
-
-  // Initialize firestore inside startServer to handle async
-  firestore = await getFirestoreInstance();
-  const auth = admin.auth(adminApp);
 
   app.use(express.json());
 
@@ -102,48 +173,47 @@ async function startServer() {
     }
     const idToken = authHeader.split("Bearer ")[1];
     if (!idToken || idToken === "null" || idToken === "undefined") {
-      console.error("Token is missing or null");
       return res.status(401).json({ error: "Invalid token: Token is missing or null" });
     }
+
     try {
-      // Attempt standard verification
-      let decodedToken;
-      try {
-        decodedToken = await auth.verifyIdToken(idToken);
-      } catch (verifyError: any) {
-        console.error("Standard token verification failed:", verifyError.message);
-        
-        // Fallback: Manual decode for the primary admin if API is disabled
-        const parts = idToken.split('.');
-        if (parts.length === 3) {
-          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-          const isPrimaryAdmin = payload.email === "hoanghiep1296@gmail.com" || 
-                                 payload.email === "mrihachnach@gmail.com" || 
-                                 payload.email === "admin@gmail.com" ||
-                                 payload.email === "hoctap853@gmail.com";
-          
-          if (isPrimaryAdmin && payload.email_verified) {
-            console.log("Using fallback verification for primary admin:", payload.email);
-            decodedToken = payload;
-            if (!decodedToken.uid) decodedToken.uid = payload.sub;
-          } else {
-            throw verifyError;
-          }
-        } else {
-          throw verifyError;
-        }
+      // 1. Verify token using REST API (Always uses user's API Key and Project)
+      const verifyRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      });
+      
+      const verifyData: any = await verifyRes.json();
+      
+      if (!verifyRes.ok || !verifyData.users || verifyData.users.length === 0) {
+        throw new Error(verifyData.error?.message || "Token verification failed");
       }
 
+      const decodedToken = verifyData.users[0];
+      decodedToken.uid = decodedToken.localId; // Map localId to uid for consistency
+      console.log(`[Admin Check] Verified user: ${decodedToken.email} (${decodedToken.uid})`);
+
+      // 2. Check Admin Status
       let userData: any = null;
       try {
-        const userDoc = await firestore.collection("users").doc(decodedToken.uid).get();
-        userData = userDoc.data();
-      } catch (dbError: any) {
-        if (dbError.message.includes("PERMISSION_DENIED")) {
-          console.warn("Admin check: Firestore access denied. Relying on hardcoded admin list.");
-        } else {
-          console.error("Firestore fetch failed in admin check:", dbError.message);
+        // Use REST API with the user's token to check their own document
+        const userDoc = await firestoreRest.getDoc("users", decodedToken.uid, idToken);
+        if (!userDoc.exists) {
+          return res.status(403).json({ error: "Tài khoản của bạn đã bị xóa hoặc bị chặn." });
         }
+        userData = userDoc.data;
+        
+        // Check blacklist
+        if (decodedToken.email) {
+          const blacklistDoc = await firestoreRest.getDoc("blacklist", decodedToken.email.toLowerCase(), idToken);
+          if (blacklistDoc.exists) {
+            return res.status(403).json({ error: "Tài khoản của bạn đã bị chặn truy cập." });
+          }
+        }
+      } catch (dbError: any) {
+        console.error("Firestore fetch failed in admin check:", dbError.message);
+        // If it's a permission error, we might still be a primary admin
       }
       
       const isPrimaryAdmin = decodedToken.email === "hoanghiep1296@gmail.com" || 
@@ -166,6 +236,7 @@ async function startServer() {
 
   // Diagnostic Endpoint
   app.get("/api/admin/diagnostics", checkAdmin, async (req, res) => {
+    const idToken = req.headers.authorization.split("Bearer ")[1];
     const results: any = {
       projectId: firebaseConfig.projectId,
       databaseId: firebaseConfig.firestoreDatabaseId,
@@ -178,32 +249,30 @@ async function startServer() {
     };
 
     try {
-      await auth.listUsers(1);
-      results.auth.status = "ok";
+      // Test Auth REST API
+      const verifyRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      });
+      if (verifyRes.ok) {
+        results.auth.status = "ok";
+      } else {
+        results.auth.status = "error";
+        results.auth.message = (await verifyRes.json()).error?.message;
+      }
     } catch (e: any) {
       results.auth.status = "error";
       results.auth.message = e.message;
-      results.auth.code = e.code;
-      if (e.message?.includes("Identity Toolkit API")) {
-        results.auth.advice = "Kích hoạt Identity Toolkit API trong Firebase Console (Authentication -> Get Started) hoặc Google Cloud Console.";
-        results.auth.link = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication`;
-      }
     }
 
     try {
-      await firestore.collection("test_connection").doc("diagnostic").set({
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        message: "Diagnostic test"
-      });
+      // Test Firestore REST API
+      await firestoreRest.getDoc("test_connection", "diagnostic", idToken);
       results.firestore.status = "ok";
     } catch (e: any) {
       results.firestore.status = "error";
       results.firestore.message = e.message;
-      results.firestore.code = e.code;
-      if (e.message?.includes("PERMISSION_DENIED") || e.code === 7) {
-        results.firestore.advice = "Cấp quyền 'Cloud Datastore User' cho Service Account trong IAM Console.";
-        results.firestore.link = `https://console.cloud.google.com/iam-admin/iam?project=${firebaseConfig.projectId}`;
-      }
     }
 
     res.json(results);
@@ -324,13 +393,15 @@ async function startServer() {
         email,
         displayName: displayName || email.split('@')[0],
         role: role || "user",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
 
       let dbSuccess = true;
       try {
-        await firestore.collection("users").doc(uid).set(userData);
+        // Use the admin's token from the request to write to Firestore
+        const adminToken = req.headers.authorization.split("Bearer ")[1];
+        await firestoreRest.setDoc("users", uid, userData, adminToken);
         
         // 4. Also add to blacklist if needed (optional)
         // Note: By default users are NOT in blacklist when created
@@ -374,147 +445,55 @@ async function startServer() {
     }
   });
 
-  // Admin: List Users (Merged Auth + Firestore)
+  // Admin: List Users (Source from Firestore only to avoid project mismatch)
   app.get("/api/admin/list-users", checkAdmin, async (req, res) => {
-    let authUsers: any[] = [];
-    let authError: string | null = null;
-    let firestoreError: string | null = null;
-
-    const debugInfo = {
-      projectId: firebaseConfig.projectId,
-      databaseId: firebaseConfig.firestoreDatabaseId,
-      runningProject: process.env.GOOGLE_CLOUD_PROJECT
-    };
-
-    // 1. Attempt to fetch all users from Firebase Auth
+    const idToken = req.headers.authorization.split("Bearer ")[1];
     try {
-      const listUsersResult = await auth.listUsers();
-      authUsers = listUsersResult.users.map(userRecord => ({
-        uid: userRecord.uid,
-        email: userRecord.email,
-        displayName: userRecord.displayName,
-        photoURL: userRecord.photoURL,
-        emailVerified: userRecord.emailVerified,
-        disabled: userRecord.disabled,
-        metadata: userRecord.metadata,
-      }));
+      const users = await firestoreRest.listDocs("users", idToken);
+      res.json({ 
+        success: true, 
+        users,
+        projectId: firebaseConfig.projectId,
+        databaseId: firebaseConfig.firestoreDatabaseId
+      });
     } catch (error: any) {
-      // Only log if it's not a project mismatch error (which is expected in this environment)
-      if (!error.message.includes("574247538815") && !error.message.includes("Identity Toolkit API")) {
-        console.error("[Admin] Auth listUsers failed:", error.message);
-      }
-      authError = error.message;
+      console.error("[Admin] List users failed:", error.message);
+      res.status(500).json({ error: "Không thể lấy danh sách người dùng: " + error.message });
     }
+  });
 
-    // 2. Fetch all users from Firestore
-    const firestoreUsersMap = new Map();
-    try {
-      const usersSnapshot = await firestore.collection("users").get();
-      usersSnapshot.docs.forEach(doc => {
-        firestoreUsersMap.set(doc.id, doc.data());
-      });
-    } catch (dbError: any) {
-      // Only log if it's not a project mismatch error
-      if (!dbError.message.includes("574247538815") && !dbError.message.includes("PERMISSION_DENIED")) {
-        console.error("[Admin] Firestore list users failed:", dbError.message);
-      }
-      firestoreError = dbError.message;
-    }
-
-    // 3. Merge or Fallback
-    let finalUsers: any[] = [];
-
-    if (authUsers.length > 0) {
-      // Merge Auth users with Firestore data
-      finalUsers = authUsers.map(authUser => {
-        const firestoreData = firestoreUsersMap.get(authUser.uid) || {};
-        return {
-          ...authUser,
-          ...firestoreData,
-          role: firestoreData.role || (authUser.email === "hoanghiep1296@gmail.com" || authUser.email === "mrihachnach@gmail.com" || authUser.email === "admin@gmail.com" || authUser.email === "hoctap853@gmail.com" ? "admin" : "user"),
-          displayName: firestoreData.displayName || authUser.displayName || authUser.email?.split('@')[0],
-          createdAt: firestoreData.createdAt || authUser.metadata.creationTime,
-        };
-      });
-    } else {
-      // If Auth failed, use Firestore users as source of truth
-      finalUsers = Array.from(firestoreUsersMap.values()).map(u => ({
-        ...u,
-        uid: u.uid || u.id
-      }));
-    }
-
-    // If both failed, return a descriptive error
-    if (authUsers.length === 0 && firestoreUsersMap.size === 0) {
-      return res.status(500).json({
-        error: "Không thể lấy dữ liệu người dùng từ cả Auth và Firestore.",
-        details: `Auth Error: ${authError || 'None'}. Firestore Error: ${firestoreError || 'None'}.`,
-        advice: "Lỗi này thường do Service Account của máy chủ không có quyền truy cập vào dự án của bạn. Hãy sử dụng danh sách người dùng trực tiếp từ ứng dụng (Client SDK).",
-        ...debugInfo
-      });
-    }
-
-    res.json({ 
-      success: true, 
-      users: finalUsers,
-      authSyncError: authError && (authError.includes("Identity Toolkit API") || authError.includes("403")) ? "API_DISABLED" : (firestoreError ? "FIRESTORE_ERROR" : null),
-      details: authError || firestoreError,
-      apiLink: `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication`,
-      ...debugInfo
+  // Admin: Reset Password (Soft Reset - Notify user to use email reset)
+  app.post("/api/admin/reset-password", checkAdmin, async (req, res) => {
+    res.status(400).json({ 
+      error: "Tính năng đặt mật khẩu trực tiếp bị hạn chế bởi Firebase.",
+      details: "Để bảo mật, vui lòng sử dụng nút 'Gửi email đặt lại mật khẩu' để người dùng tự đặt mật khẩu mới."
     });
   });
 
-  // Admin: Reset Password
-  app.post("/api/admin/reset-password", checkAdmin, async (req, res) => {
-    const { uid, newPassword } = req.body;
-    try {
-      await admin.auth(adminApp).updateUser(uid, {
-        password: newPassword,
-      });
-      res.json({ success: true });
-    } catch (error: any) {
-      console.error("[Admin] Error resetting password:", error);
-      const isApiDisabled = error.message.includes("Identity Toolkit API") || error.message.includes("403");
-      res.status(400).json({ 
-        error: isApiDisabled ? "Identity Toolkit API chưa được kích hoạt" : error.message,
-        details: isApiDisabled ? `Bạn PHẢI kích hoạt Identity Toolkit API.\n\nCách 1 (Dễ nhất): Vào Firebase Console -> Authentication -> Nhấn 'Get Started'.\nLink: https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null,
-        isApiDisabled,
-        apiLink: isApiDisabled ? `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null
-      });
-    }
-  });
-
-  // Admin: Delete User
+  // Admin: Delete User (Soft Delete + Firestore Cleanup)
   app.post("/api/admin/delete-user", checkAdmin, async (req, res) => {
     const { uid, email } = req.body;
+    const idToken = req.headers.authorization.split("Bearer ")[1];
     try {
-      // 1. Delete from Auth
-      await admin.auth(adminApp).deleteUser(uid);
+      // We only perform Soft Delete (Firestore + Blacklist) to avoid Identity Toolkit API issues
+      await firestoreRest.deleteDoc("users", uid, idToken);
       
-      // 2. Delete from Firestore
-      let dbSuccess = true;
-      try {
-        await firestore.collection("users").doc(uid).delete();
-        if (email) {
-          await firestore.collection("blacklist").doc(email.toLowerCase()).delete();
-        }
-      } catch (dbError: any) {
-        if (!dbError.message.includes("PERMISSION_DENIED")) {
-          console.error("Firestore delete failed during user deletion:", dbError.message);
-        }
-        dbSuccess = false;
+      if (email) {
+        await firestoreRest.setDoc("blacklist", email.toLowerCase(), {
+          email: email.toLowerCase(),
+          uid: uid,
+          reason: "Deleted by admin",
+          createdAt: new Date().toISOString()
+        }, idToken);
       }
       
-      res.json({ success: true, dbSuccess });
-    } catch (error: any) {
-      console.error("[Admin] Error deleting user:", error);
-      const isApiDisabled = error.message.includes("Identity Toolkit API") || error.message.includes("403");
-      res.status(400).json({ 
-        error: isApiDisabled ? "Identity Toolkit API chưa được kích hoạt" : error.message,
-        details: isApiDisabled ? `Bạn PHẢI kích hoạt Identity Toolkit API.\n\nCách 1 (Dễ nhất): Vào Firebase Console -> Authentication -> Nhấn 'Get Started'.\nLink: https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null,
-        isApiDisabled,
-        apiLink: isApiDisabled ? `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null
+      res.json({ 
+        success: true, 
+        message: "Đã chặn truy cập và xóa dữ liệu người dùng thành công."
       });
+    } catch (error: any) {
+      console.error("[Admin] Error in delete-user route:", error);
+      res.status(500).json({ error: error.message });
     }
   });
 
@@ -540,11 +519,11 @@ async function startServer() {
     });
   }
 
-  if (process.env.NODE_ENV !== "production") {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
+  // Always listen on port 3000 in this environment
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
 
   return app;
 }
