@@ -59,7 +59,9 @@ import {
   Folder,
   Home,
   ExternalLink,
-  Mail
+  Mail,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -519,6 +521,10 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState('');
   const [authDisplayName, setAuthDisplayName] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showAdminNewUserPassword, setShowAdminNewUserPassword] = useState(false);
+  const [showApiKeys, setShowApiKeys] = useState(false);
 
   const [userKeys, setUserKeys] = useState<any[]>([]);
   const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
@@ -2510,15 +2516,22 @@ export default function App() {
                     <div>
                       <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Mật khẩu</label>
                       <div className="relative">
-                        <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300" />
+                        <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300 pointer-events-none" />
                         <input 
-                          type="password"
+                          type={showAuthPassword ? "text" : "password"}
                           required
                           value={authPassword}
                           onChange={(e) => setAuthPassword(e.target.value)}
-                          className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-bold text-slate-700"
+                          className="w-full pl-12 pr-12 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-bold text-slate-700"
                           placeholder="••••••••"
                         />
+                        <button
+                          type="button"
+                          onClick={() => setShowAuthPassword(!showAuthPassword)}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 transition-colors"
+                        >
+                          {showAuthPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                        </button>
                       </div>
                     </div>
 
@@ -3432,15 +3445,24 @@ export default function App() {
                   </div>
                   <div>
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Mật khẩu</label>
-                    <input 
-                      type="password"
-                      required
-                      minLength={6}
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm"
-                    />
+                    <div className="relative">
+                      <input 
+                        type={showAuthPassword ? "text" : "password"}
+                        required
+                        minLength={6}
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full pl-4 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowAuthPassword(!showAuthPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 transition-colors"
+                      >
+                        {showAuthPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
 
                   {authError && (
@@ -3846,13 +3868,22 @@ export default function App() {
                           className="overflow-hidden"
                         >
                           <div className="pt-4 space-y-3">
-                            <input 
-                              type="password"
-                              placeholder="Mật khẩu mới (tối thiểu 6 ký tự)"
-                              value={newPasswordValue}
-                              onChange={(e) => setNewPasswordValue(e.target.value)}
-                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
-                            />
+                            <div className="relative">
+                              <input 
+                                type={showNewPassword ? "text" : "password"}
+                                placeholder="Mật khẩu mới (tối thiểu 6 ký tự)"
+                                value={newPasswordValue}
+                                onChange={(e) => setNewPasswordValue(e.target.value)}
+                                className="w-full pl-3 pr-10 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowNewPassword(!showNewPassword)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 transition-colors"
+                              >
+                                {showNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                            </div>
                             <button 
                               onClick={async () => {
                                 if (newPasswordValue.length < 6) {
@@ -3886,16 +3917,25 @@ export default function App() {
                     API Key cho Gemini 3 Flash
                   </label>
                   <div className="flex gap-2 mt-3">
-                    <input 
-                      type="password"
-                      value={tempKeys['gemini-flash']}
-                      onChange={(e) => {
-                        setTempKeys(prev => ({ ...prev, ['gemini-flash']: e.target.value }));
-                        setTestStatus({ type: null, message: '' });
-                      }}
-                      placeholder="Nhập API Key cho Gemini..."
-                      className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-mono text-sm"
-                    />
+                    <div className="flex-1 relative">
+                      <input 
+                        type={showApiKeys ? "text" : "password"}
+                        value={tempKeys['gemini-flash']}
+                        onChange={(e) => {
+                          setTempKeys(prev => ({ ...prev, ['gemini-flash']: e.target.value }));
+                          setTestStatus({ type: null, message: '' });
+                        }}
+                        placeholder="Nhập API Key cho Gemini..."
+                        className="w-full pl-4 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-mono text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKeys(!showApiKeys)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 transition-colors"
+                      >
+                        {showApiKeys ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                     <button 
                       onClick={async () => {
                         if (!tempKeys['gemini-flash']) {
@@ -4014,13 +4054,22 @@ export default function App() {
                               className="px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
                             />
                           </div>
-                          <input 
-                            type="password"
-                            placeholder="Dán API Key vào đây..."
-                            value={newKey.value}
-                            onChange={(e) => setNewKey(prev => ({ ...prev, value: e.target.value }))}
-                            className="w-full px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs mb-3 focus:ring-2 focus:ring-indigo-500 outline-none font-mono"
-                          />
+                          <div className="relative">
+                            <input 
+                              type={showApiKeys ? "text" : "password"}
+                              placeholder="Dán API Key vào đây..."
+                              value={newKey.value}
+                              onChange={(e) => setNewKey(prev => ({ ...prev, value: e.target.value }))}
+                              className="w-full pl-3 pr-10 py-2 bg-white border border-indigo-100 rounded-xl text-xs mb-3 focus:ring-2 focus:ring-indigo-500 outline-none font-mono"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowApiKeys(!showApiKeys)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 transition-colors mb-3"
+                            >
+                              {showApiKeys ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
                           <div className="flex justify-end gap-2">
                             <button 
                               onClick={() => setIsAddingKey(false)}
@@ -4495,13 +4544,22 @@ export default function App() {
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Mật khẩu</label>
-                        <input 
-                          type="password"
-                          placeholder="••••••••"
-                          value={adminNewUserPassword}
-                          onChange={(e) => setAdminNewUserPassword(e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                        />
+                        <div className="relative">
+                          <input 
+                            type={showAdminNewUserPassword ? "text" : "password"}
+                            placeholder="••••••••"
+                            value={adminNewUserPassword}
+                            onChange={(e) => setAdminNewUserPassword(e.target.value)}
+                            className="w-full pl-3 pr-10 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowAdminNewUserPassword(!showAdminNewUserPassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 transition-colors"
+                          >
+                            {showAdminNewUserPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Vai trò</label>
