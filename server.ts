@@ -332,7 +332,10 @@ async function startServer() {
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
       } catch (dbError: any) {
-        console.warn("Firestore update failed during user creation (server-side):", dbError.message);
+        // Suppress expected permission logs as we have a client-side fallback
+        if (!dbError.message.includes("PERMISSION_DENIED") && !dbError.message.includes("574247538815")) {
+          console.error("Firestore update failed during user creation:", dbError.message);
+        }
         dbSuccess = false;
       }
       
@@ -486,7 +489,10 @@ async function startServer() {
           await firestore.collection("authorized_emails").doc(email.toLowerCase()).delete();
         }
       } catch (dbError: any) {
-        console.warn("Firestore delete failed during user deletion (server-side):", dbError.message);
+        // Suppress expected permission logs as we have a client-side fallback
+        if (!dbError.message.includes("PERMISSION_DENIED") && !dbError.message.includes("574247538815")) {
+          console.error("Firestore delete failed during user deletion:", dbError.message);
+        }
         dbSuccess = false;
       }
       
