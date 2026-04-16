@@ -470,7 +470,11 @@ async function startServer() {
       res.json({ success: true });
     } catch (error: any) {
       console.error("[Admin] Error resetting password:", error);
-      res.status(400).json({ error: error.message });
+      const isApiDisabled = error.message.includes("Identity Toolkit API") || error.message.includes("403");
+      res.status(400).json({ 
+        error: isApiDisabled ? "Identity Toolkit API chưa được kích hoạt" : error.message,
+        isApiDisabled
+      });
     }
   });
 
@@ -499,7 +503,11 @@ async function startServer() {
       res.json({ success: true, dbSuccess });
     } catch (error: any) {
       console.error("[Admin] Error deleting user:", error);
-      res.status(400).json({ error: error.message });
+      const isApiDisabled = error.message.includes("Identity Toolkit API") || error.message.includes("403");
+      res.status(400).json({ 
+        error: isApiDisabled ? "Identity Toolkit API chưa được kích hoạt" : error.message,
+        isApiDisabled
+      });
     }
   });
 

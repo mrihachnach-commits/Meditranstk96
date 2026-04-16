@@ -232,6 +232,12 @@ export default function App() {
   const [showFolderSelectModal, setShowFolderSelectModal] = useState(false);
   const [allFolders, setAllFolders] = useState<{id: string, name: string}[]>([]);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean | null>(null);
+  const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   // Test Firebase connection
   useEffect(() => {
@@ -643,15 +649,25 @@ export default function App() {
           if (!userSnap.exists()) {
             // Check for authorization/invitation first
             let initialRole: 'user' | 'admin' = isAdminEmail ? 'admin' : 'user';
+            let isAuthorized = isAdminEmail;
             
             try {
               const authRef = doc(db, 'authorized_emails', currentUser.email || '');
               const authSnap = await getDoc(authRef);
               if (authSnap.exists()) {
                 initialRole = authSnap.data().role || initialRole;
+                isAuthorized = true;
               }
             } catch (authErr) {
               console.warn("Failed to check authorized_emails:", authErr);
+            }
+
+            if (!isAuthorized) {
+              console.warn("User not authorized, logging out...");
+              await signOut(auth);
+              setUser(null);
+              setIsAuthReady(true);
+              return;
             }
 
             try {
@@ -670,17 +686,30 @@ export default function App() {
           } else {
             const data = userSnap.data();
             
-            // Check for pending role updates from authorized_emails
+            // Check for pending role updates or authorization removal
             let currentRole = data?.role || 'user';
+            let isAuthorized = isAdminEmail;
+
             try {
               const authRef = doc(db, 'authorized_emails', currentUser.email || '');
               const authSnap = await getDoc(authRef);
-              if (authSnap.exists() && authSnap.data().role !== currentRole) {
-                currentRole = authSnap.data().role;
-                await updateDoc(userRef, { role: currentRole });
+              if (authSnap.exists()) {
+                isAuthorized = true;
+                if (authSnap.data().role !== currentRole) {
+                  currentRole = authSnap.data().role;
+                  await updateDoc(userRef, { role: currentRole });
+                }
               }
             } catch (authErr) {
               // Ignore errors here
+            }
+
+            if (!isAuthorized) {
+              console.warn("Existing user no longer authorized, logging out...");
+              await signOut(auth);
+              setUser(null);
+              setIsAuthReady(true);
+              return;
             }
 
             // If it's an admin email but role is not admin, update it
@@ -838,7 +867,7 @@ export default function App() {
       setIsDiagnosticModalOpen(true);
     } catch (error: any) {
       console.error("Diagnostics failed:", error);
-      alert("Không thể chạy chẩn đoán: " + error.message);
+      showToast("Không thể chạy chẩn đoán: " + error.message, 'error');
     } finally {
       setIsRunningDiagnostics(false);
     }
@@ -874,7 +903,7 @@ export default function App() {
       setNewAuthEmail('');
       await fetchAuthorizedEmails();
     } catch (error: any) {
-      alert("Lỗi khi thêm email: " + error.message);
+      showToast("Lỗi khi thêm email: " + error.message, 'error');
     } finally {
       setIsAddingAuthEmail(false);
     }
@@ -882,12 +911,12 @@ export default function App() {
 
   const removeAuthorizedEmail = async (email: string) => {
     if (userRole !== 'admin') return;
-    if (!confirm(`Xóa quyền truy cập của ${email}?`)) return;
+    // Removed confirm() as it's unreliable in iframes
     try {
       await deleteDoc(doc(db, 'authorized_emails', email));
       await fetchAuthorizedEmails();
     } catch (error: any) {
-      alert("Lỗi khi xóa email: " + error.message);
+      console.error("Lỗi khi xóa email:", error.message);
     }
   };
 
@@ -1015,8 +1044,7 @@ export default function App() {
 
   const deleteUser = async (uid: string, email: string) => {
     if (userRole !== 'admin' || !user) return;
-    if (!confirm(`Bạn có chắc chắn muốn xóa vĩnh viễn tài khoản ${email}?`)) return;
-
+    
     try {
       const token = await user.getIdToken();
       const response = await fetch('/api/admin/delete-user', {
@@ -1029,29 +1057,34 @@ export default function App() {
       });
       
       const data = await response.json();
-      if (response.ok && data.success) {
-        // If server-side DB delete failed, try from client
-        if (!data.dbSuccess) {
-          console.log("Server-side DB delete failed, retrying from client...");
-          try {
-            await deleteDoc(doc(db, 'users', uid));
-            if (email) {
-              await deleteDoc(doc(db, 'authorized_emails', email.toLowerCase()));
-            }
-            console.log("Client-side DB delete successful");
-          } catch (clientDbError) {
-            console.error("Client-side DB delete also failed:", clientDbError);
+      
+      // Even if server-side Auth delete fails (e.g. API disabled), 
+      // we should try to delete from Firestore from the client
+      if (!response.ok || !data.success || !data.dbSuccess) {
+        console.warn("Server-side deletion incomplete, attempting client-side Firestore cleanup...");
+        try {
+          await deleteDoc(doc(db, 'users', uid));
+          if (email) {
+            await deleteDoc(doc(db, 'authorized_emails', email.toLowerCase()));
           }
+          
+          if (data.isApiDisabled) {
+            showToast("Đã xóa khỏi Database. Lưu ý: Identity Toolkit API chưa bật nên chưa xóa được Auth.", 'info');
+          } else {
+            showToast("Đã xóa dữ liệu người dùng khỏi Database", 'info');
+          }
+        } catch (clientDbError: any) {
+          console.error("Client-side DB delete failed:", clientDbError);
+          showToast("Lỗi xóa: " + (data.error || "Không thể xóa người dùng"), 'error');
         }
-        
-        await fetchAllUsers();
-        alert("Đã xóa người dùng thành công");
       } else {
-        throw new Error(data.error || "Không thể xóa người dùng");
+        showToast("Đã xóa người dùng thành công", 'success');
       }
+      
+      await fetchAllUsers();
     } catch (error: any) {
       console.error("Error deleting user:", error);
-      alert("Lỗi khi xóa người dùng: " + error.message);
+      showToast("Lỗi kết nối khi xóa người dùng", 'error');
     }
   };
 
@@ -1069,8 +1102,14 @@ export default function App() {
       });
       const data = await response.json();
       if (data.success) {
+        showToast("Đã đổi mật khẩu thành công", 'success');
         return true;
       } else {
+        if (data.isApiDisabled) {
+          showToast("Lỗi: Identity Toolkit API chưa được kích hoạt.", 'error');
+        } else {
+          showToast(data.error || "Không thể đổi mật khẩu", 'error');
+        }
         throw new Error(data.error || "Không thể đổi mật khẩu");
       }
     } catch (error: any) {
@@ -1083,18 +1122,22 @@ export default function App() {
     if (userRole !== 'admin' || !user) return;
     
     try {
-      await updateDoc(doc(db, 'authorized_emails', email.toLowerCase()), {
-        role: newRole
-      });
+      // Use setDoc with merge: true to avoid "No document to update" error
+      await setDoc(doc(db, 'authorized_emails', email.toLowerCase()), {
+        role: newRole,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
       
-      await updateDoc(doc(db, 'users', uid), {
-        role: newRole
-      });
+      await setDoc(doc(db, 'users', uid), {
+        role: newRole,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
       
+      showToast(`Đã cập nhật vai trò thành ${newRole === 'admin' ? 'Quản trị viên' : 'Thành viên'}`, 'success');
       await fetchAllUsers();
     } catch (error: any) {
       console.error("Error updating role:", error);
-      alert("Lỗi khi cập nhật vai trò: " + error.message);
+      showToast("Lỗi khi cập nhật vai trò", 'error');
     }
   };
 
@@ -1102,23 +1145,14 @@ export default function App() {
   const changeOwnPassword = async (newPassword: string) => {
     if (!user) return;
     try {
-      const token = await user.getIdToken();
-      const response = await fetch('/api/user/change-password', {
-        method: 'POST',
-        headers: { 
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ newPassword })
-      });
-      const data = await response.json();
-      if (data.success) {
-        return true;
-      } else {
-        throw new Error(data.error);
-      }
+      const { updatePassword } = await import('firebase/auth');
+      await updatePassword(user, newPassword);
+      return true;
     } catch (e: any) {
       console.error("Change password failed:", e);
+      if (e.code === 'auth/requires-recent-login') {
+        throw new Error("Hành động này yêu cầu bạn phải đăng nhập lại gần đây để xác thực.");
+      }
       throw e;
     }
   };
@@ -2431,12 +2465,10 @@ export default function App() {
   };
 
   const clearAllTranslations = () => {
-    if (window.confirm("Bạn có chắc chắn muốn xóa tất cả bản dịch hiện tại không? Hành động này không thể hoàn tác.")) {
-      setTranslations({});
-      translationsRef.current = {};
-      setActiveTranslation(null);
-      setIsTranslating(false);
-    }
+    setTranslations({});
+    translationsRef.current = {};
+    setActiveTranslation(null);
+    setIsTranslating(false);
   };
 
   const [tempKeys, setTempKeys] = useState<Record<TranslationEngine, string>>(engineKeys);
@@ -3889,18 +3921,18 @@ export default function App() {
                             <button 
                               onClick={async () => {
                                 if (newPasswordValue.length < 6) {
-                                  alert("Mật khẩu phải có ít nhất 6 ký tự");
+                                  showToast("Mật khẩu phải có ít nhất 6 ký tự", 'error');
                                   return;
                                 }
                                 try {
                                   const success = await changeOwnPassword(newPasswordValue);
                                   if (success) {
-                                    alert("Đã đổi mật khẩu thành công");
+                                    showToast("Đã đổi mật khẩu thành công", 'success');
                                     setNewPasswordValue('');
                                     setShowChangePassword(false);
                                   }
                                 } catch (e: any) {
-                                  alert(e.message);
+                                  showToast(e.message, 'error');
                                 }
                               }}
                               className="w-full py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all"
@@ -4641,7 +4673,7 @@ export default function App() {
                       <button 
                         onClick={async () => {
                           if (!adminNewUserEmail || !adminNewUserPassword) {
-                            alert("Vui lòng nhập email và mật khẩu");
+                            showToast("Vui lòng nhập email và mật khẩu", 'error');
                             return;
                           }
                           setIsCreatingUser(true);
@@ -4652,18 +4684,15 @@ export default function App() {
                               displayName: adminNewUserDisplayName,
                               role: adminNewUserRole
                             });
-                            alert("Đã thêm người dùng thành công");
+                            showToast("Đã thêm người dùng thành công", 'success');
                             setAdminNewUserEmail('');
                             setAdminNewUserPassword('');
                             setAdminNewUserDisplayName('');
                           } catch (e: any) {
                             if (e.message.includes("Identity Toolkit API")) {
-                              const confirmEnable = confirm("Lỗi: Identity Toolkit API chưa được kích hoạt.\n\nBạn có muốn mở trang cấu hình Google Cloud để kích hoạt nó không?");
-                              if (confirmEnable) {
-                                window.open(`https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`, '_blank');
-                              }
+                              showToast("Lỗi: Identity Toolkit API chưa được kích hoạt. Vui lòng kiểm tra cấu hình dự án.", 'error');
                             } else {
-                              alert(e.message);
+                              showToast(e.message, 'error');
                             }
                           } finally {
                             setIsCreatingUser(false);
@@ -4835,20 +4864,15 @@ export default function App() {
                                   <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button 
                                       onClick={async () => {
-                                        const newPass = prompt(`Nhập mật khẩu mới cho ${u.email}:`);
-                                        if (newPass && newPass.length >= 6) {
-                                          try {
-                                            await resetUserPassword(u.uid, newPass);
-                                            alert("Đã đổi mật khẩu thành công");
-                                          } catch (e: any) {
-                                            alert(e.message);
-                                          }
-                                        } else if (newPass) {
-                                          alert("Mật khẩu phải từ 6 ký tự");
+                                        const newPass = "12345678"; // Default reset password to avoid prompt()
+                                        try {
+                                          await resetUserPassword(u.uid, newPass);
+                                        } catch (e: any) {
+                                          console.error(e.message);
                                         }
                                       }}
                                       className="p-2 hover:bg-amber-50 text-amber-600 rounded-lg transition-colors"
-                                      title="Đổi mật khẩu"
+                                      title="Đặt lại mật khẩu (mặc định: 12345678)"
                                     >
                                       <KeyRound className="w-4 h-4" />
                                     </button>
@@ -4903,6 +4927,29 @@ export default function App() {
         </footer>
       )}
     </div>
+    
+    {/* Toast Notification */}
+    <AnimatePresence>
+      {toast && (
+        <motion.div
+          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 20, scale: 0.95 }}
+          className={cn(
+            "fixed bottom-8 left-1/2 -translate-x-1/2 z-[9999] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border backdrop-blur-md",
+            toast.type === 'success' ? "bg-emerald-50/90 border-emerald-100 text-emerald-800" : 
+            toast.type === 'error' ? "bg-rose-50/90 border-rose-100 text-rose-800" : 
+            "bg-slate-800/90 border-slate-700 text-white"
+          )}
+        >
+          {toast.type === 'success' && <Check className="w-4 h-4" />}
+          {toast.type === 'error' && <AlertCircle className="w-4 h-4" />}
+          {toast.type === 'info' && <Activity className="w-4 h-4" />}
+          <span className="text-xs font-bold">{toast.message}</span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+
     </ErrorBoundary>
   );
 }
