@@ -66,9 +66,24 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "When the file was uploaded." }
       },
       "required": ["name", "token", "downloadUrl"]
+    },
+    "Blacklist": {
+      "title": "Blacklist",
+      "description": "Blacklisted user emails.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "description": "The blacklisted email address." },
+        "addedBy": { "type": "string", "description": "The UID of the admin who added this email." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the email was blacklisted." }
+      },
+      "required": ["email"]
     }
   },
   "firestore": {
+    "/blacklist/{email}": {
+      "schema": "Blacklist",
+      "description": "Collection of blacklisted emails."
+    },
     "/users/{userId}": {
       "schema": "User",
       "description": "Collection of user profiles."

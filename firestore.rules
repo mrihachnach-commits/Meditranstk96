@@ -16,10 +16,9 @@ service cloud.firestore {
     //   - createdAt: timestamp (optional) - When the user account was created.
     //   - role: string (optional) - 'admin' or 'user'
     //
-    // Collection: authorized_emails
+    // Collection: blacklist
     // Document ID: email (string)
     // Fields:
-    //   - role: string (required) - 'admin' or 'user'
     //   - addedBy: string (optional) - UID of the admin who added this
     //   - createdAt: timestamp (optional)
     //
@@ -123,8 +122,9 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    match /authorized_emails/{email} {
+    match /blacklist/{email} {
       allow read: if isAuthenticated() && (request.auth.token.email == email || isAdmin());
+      allow list: if isAdmin();
       allow write: if isAdmin();
     }
 

@@ -48,6 +48,7 @@ import {
   Key,
   Activity,
   ShieldCheck,
+  ShieldAlert,
   User as UserIcon,
   UserPlus,
   Users,
@@ -508,11 +509,13 @@ export default function App() {
   const [adminNewUserPassword, setAdminNewUserPassword] = useState('');
   const [adminNewUserDisplayName, setAdminNewUserDisplayName] = useState('');
   const [adminNewUserRole, setAdminNewUserRole] = useState<'user' | 'admin'>('user');
-  const [authorizedEmails, setAuthorizedEmails] = useState<any[]>([]);
-  const [newAuthEmail, setNewAuthEmail] = useState('');
-  const [newAuthRole, setNewAuthRole] = useState<'user' | 'admin'>('user');
-  const [isAddingAuthEmail, setIsAddingAuthEmail] = useState(false);
-  const [isFetchingAuthEmails, setIsFetchingAuthEmails] = useState(false);
+  const [blacklist, setBlacklist] = useState<any[]>([]);
+  const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
+  const [isAddingToBlacklist, setIsAddingToBlacklist] = useState(false);
+  const [isFetchingBlacklist, setIsFetchingBlacklist] = useState(false);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userSearchResults, setUserSearchResults] = useState<any[]>([]);
+  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [newPasswordValue, setNewPasswordValue] = useState('');
@@ -647,23 +650,22 @@ export default function App() {
           const isAdminEmail = currentUser.email === "hoanghiep1296@gmail.com" || currentUser.email === "mrihachnach@gmail.com" || currentUser.email === "admin@gmail.com" || currentUser.email === "hoctap853@gmail.com";
           
           if (!userSnap.exists()) {
-            // Check for authorization/invitation first
-            let initialRole: 'user' | 'admin' = isAdminEmail ? 'admin' : 'user';
-            let isAuthorized = isAdminEmail;
+            // Check for blacklist
+            let isBlacklisted = false;
             
             try {
-              const authRef = doc(db, 'authorized_emails', currentUser.email || '');
-              const authSnap = await getDoc(authRef);
-              if (authSnap.exists()) {
-                initialRole = authSnap.data().role || initialRole;
-                isAuthorized = true;
+              const blacklistRef = doc(db, 'blacklist', currentUser.email || '');
+              const blacklistSnap = await getDoc(blacklistRef);
+              if (blacklistSnap.exists()) {
+                isBlacklisted = true;
               }
             } catch (authErr) {
-              console.warn("Failed to check authorized_emails:", authErr);
+              console.warn("Failed to check blacklist:", authErr);
             }
 
-            if (!isAuthorized) {
-              console.warn("User not authorized, logging out...");
+            if (isBlacklisted && !isAdminEmail) {
+              console.warn("User is blacklisted, logging out...");
+              showToast("Tài khoản của bạn đã bị chặn truy cập.", 'error');
               await signOut(auth);
               setUser(null);
               setIsAuthReady(true);
@@ -677,47 +679,44 @@ export default function App() {
                 displayName: currentUser.displayName,
                 photoURL: currentUser.photoURL,
                 createdAt: serverTimestamp(),
-                role: initialRole
-              });
+                role: isAdminEmail ? 'admin' : 'user'
+              }, { merge: true });
             } catch (writeError) {
-              console.warn("Failed to create user doc, but continuing with local role:", writeError);
+              console.warn("Failed to create user doc:", writeError);
             }
-            setUserRole(initialRole);
+            setUserRole(isAdminEmail ? 'admin' : 'user');
           } else {
             const data = userSnap.data();
             
-            // Check for pending role updates or authorization removal
-            let currentRole = data?.role || 'user';
-            let isAuthorized = isAdminEmail;
+            // Check for blacklist
+            let isBlacklisted = false;
 
             try {
-              const authRef = doc(db, 'authorized_emails', currentUser.email || '');
-              const authSnap = await getDoc(authRef);
-              if (authSnap.exists()) {
-                isAuthorized = true;
-                if (authSnap.data().role !== currentRole) {
-                  currentRole = authSnap.data().role;
-                  await updateDoc(userRef, { role: currentRole });
-                }
+              const blacklistRef = doc(db, 'blacklist', currentUser.email || '');
+              const blacklistSnap = await getDoc(blacklistRef);
+              if (blacklistSnap.exists()) {
+                isBlacklisted = true;
               }
             } catch (authErr) {
               // Ignore errors here
             }
 
-            if (!isAuthorized) {
-              console.warn("Existing user no longer authorized, logging out...");
+            if (isBlacklisted && !isAdminEmail) {
+              console.warn("Existing user blacklisted, logging out...");
+              showToast("Tài khoản của bạn đã bị chặn truy cập.", 'error');
               await signOut(auth);
               setUser(null);
               setIsAuthReady(true);
               return;
             }
 
+            let currentRole = data?.role || 'user';
             // If it's an admin email but role is not admin, update it
             if (isAdminEmail && currentRole !== 'admin') {
               try {
                 await updateDoc(userRef, { role: 'admin' });
               } catch (updateError) {
-                console.warn("Failed to update admin role in DB, but continuing with local role:", updateError);
+                console.warn("Failed to update admin role in DB:", updateError);
               }
               setUserRole('admin');
             } else {
@@ -873,50 +872,81 @@ export default function App() {
     }
   };
 
-  const fetchAuthorizedEmails = async () => {
+  const fetchBlacklist = async () => {
     if (userRole !== 'admin') return;
-    setIsFetchingAuthEmails(true);
+    setIsFetchingBlacklist(true);
     try {
-      const querySnapshot = await getDocs(collection(db, 'authorized_emails'));
+      const querySnapshot = await getDocs(collection(db, 'blacklist'));
       const emails = querySnapshot.docs.map(doc => ({
         email: doc.id,
         ...doc.data()
       }));
-      setAuthorizedEmails(emails);
+      setBlacklist(emails);
     } catch (error) {
-      console.error("Error fetching authorized emails:", error);
+      console.error("Error fetching blacklist:", error);
     } finally {
-      setIsFetchingAuthEmails(false);
+      setIsFetchingBlacklist(false);
     }
   };
 
-  const addAuthorizedEmail = async () => {
-    if (userRole !== 'admin' || !newAuthEmail) return;
-    setIsAddingAuthEmail(true);
+  const addToBlacklist = async (emailToBlacklist?: string) => {
+    const email = (emailToBlacklist || newBlacklistEmail).toLowerCase().trim();
+    if (userRole !== 'admin' || !email) return;
+
+    // Don't allow blacklisting admins
+    const isAdminEmail = email === "hoanghiep1296@gmail.com" || email === "mrihachnach@gmail.com" || email === "admin@gmail.com" || email === "hoctap853@gmail.com";
+    if (isAdminEmail) {
+      showToast("Không thể chặn tài khoản quản trị viên.", 'error');
+      return;
+    }
+
+    setIsAddingToBlacklist(true);
     try {
-      const email = newAuthEmail.toLowerCase().trim();
-      await setDoc(doc(db, 'authorized_emails', email), {
-        role: newAuthRole,
+      await setDoc(doc(db, 'blacklist', email), {
         createdAt: serverTimestamp(),
         addedBy: user?.uid
       });
-      setNewAuthEmail('');
-      await fetchAuthorizedEmails();
+      setNewBlacklistEmail('');
+      showToast(`Đã thêm ${email} vào danh sách đen.`, 'success');
+      await fetchBlacklist();
     } catch (error: any) {
-      showToast("Lỗi khi thêm email: " + error.message, 'error');
+      showToast("Lỗi khi thêm vào danh sách đen: " + error.message, 'error');
     } finally {
-      setIsAddingAuthEmail(false);
+      setIsAddingToBlacklist(false);
     }
   };
 
-  const removeAuthorizedEmail = async (email: string) => {
+  const removeFromBlacklist = async (email: string) => {
     if (userRole !== 'admin') return;
-    // Removed confirm() as it's unreliable in iframes
     try {
-      await deleteDoc(doc(db, 'authorized_emails', email));
-      await fetchAuthorizedEmails();
+      await deleteDoc(doc(db, 'blacklist', email));
+      showToast(`Đã xóa ${email} khỏi danh sách đen.`, 'success');
+      await fetchBlacklist();
     } catch (error: any) {
-      console.error("Lỗi khi xóa email:", error.message);
+      console.error("Lỗi khi xóa khỏi danh sách đen:", error.message);
+    }
+  };
+
+  const searchUsers = async () => {
+    if (userRole !== 'admin' || !userSearchQuery.trim()) return;
+    setIsSearchingUsers(true);
+    try {
+      const q = query(
+        collection(db, 'users'), 
+        where('email', '>=', userSearchQuery.toLowerCase()),
+        where('email', '<=', userSearchQuery.toLowerCase() + '\uf8ff')
+      );
+      const snapshot = await getDocs(q);
+      const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setUserSearchResults(results);
+      if (results.length === 0) {
+        showToast("Không tìm thấy người dùng nào.", 'info');
+      }
+    } catch (error: any) {
+      console.error("Search users failed:", error);
+      showToast("Lỗi tìm kiếm: " + error.message, 'error');
+    } finally {
+      setIsSearchingUsers(false);
     }
   };
 
@@ -1018,11 +1048,6 @@ export default function App() {
               updatedAt: serverTimestamp()
             });
             
-            await setDoc(doc(db, 'authorized_emails', email.toLowerCase()), {
-              role: data.userData.role || 'user',
-              addedBy: user.uid,
-              createdAt: serverTimestamp()
-            });
             console.log("Client-side DB write successful");
           } catch (clientDbError) {
             console.error("Client-side DB write also failed:", clientDbError);
@@ -1065,7 +1090,7 @@ export default function App() {
         try {
           await deleteDoc(doc(db, 'users', uid));
           if (email) {
-            await deleteDoc(doc(db, 'authorized_emails', email.toLowerCase()));
+            await deleteDoc(doc(db, 'blacklist', email.toLowerCase()));
           }
           
           if (data.isApiDisabled) {
@@ -1106,7 +1131,7 @@ export default function App() {
         return true;
       } else {
         if (data.isApiDisabled) {
-          showToast("Lỗi: Identity Toolkit API chưa được kích hoạt.", 'error');
+          showToast("Lỗi: Identity Toolkit API chưa bật. Hãy thử dùng nút 'Gửi email đặt lại mật khẩu'.", 'error');
         } else {
           showToast(data.error || "Không thể đổi mật khẩu", 'error');
         }
@@ -1118,16 +1143,25 @@ export default function App() {
     }
   };
 
+  const sendAdminPasswordResetEmail = async (email: string) => {
+    if (userRole !== 'admin') return;
+    try {
+      const { sendPasswordResetEmail, getAuth } = await import('firebase/auth');
+      const authInstance = getAuth();
+      await sendPasswordResetEmail(authInstance, email);
+      showToast(`Đã gửi email đặt lại mật khẩu tới ${email}`, 'success');
+      return true;
+    } catch (error: any) {
+      console.error("Error sending reset email:", error);
+      showToast("Lỗi gửi email: " + error.message, 'error');
+      return false;
+    }
+  };
+
   const updateUserRole = async (uid: string, email: string, newRole: 'user' | 'admin') => {
     if (userRole !== 'admin' || !user) return;
     
     try {
-      // Use setDoc with merge: true to avoid "No document to update" error
-      await setDoc(doc(db, 'authorized_emails', email.toLowerCase()), {
-        role: newRole,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-      
       await setDoc(doc(db, 'users', uid), {
         role: newRole,
         updatedAt: serverTimestamp()
@@ -2736,7 +2770,7 @@ export default function App() {
               onClick={() => {
                 setShowAdminPanel(true);
                 fetchAllUsers();
-                fetchAuthorizedEmails();
+                fetchBlacklist();
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 text-white rounded-full transition-all text-[10px] font-bold uppercase tracking-wider shadow-sm hover:bg-amber-600"
               title="Quản trị hệ thống"
@@ -3858,7 +3892,7 @@ export default function App() {
                             setShowSettings(false);
                             setShowAdminPanel(true);
                             fetchAllUsers();
-                            fetchAuthorizedEmails();
+                            fetchBlacklist();
                           }}
                           className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded-lg text-[10px] font-bold hover:bg-amber-200 transition-all"
                         >
@@ -4520,97 +4554,136 @@ export default function App() {
                     </div>
                     <p className="text-3xl font-display font-black text-amber-900">{allUsers.filter(u => u.role === 'admin').length}</p>
                   </div>
-                  <div className="bg-emerald-50 p-5 rounded-3xl border border-emerald-100 shadow-sm">
+                  <div className="bg-rose-50 p-5 rounded-3xl border border-rose-100 shadow-sm">
                     <div className="flex items-center gap-3 mb-2">
-                      <div className="bg-emerald-100 p-2 rounded-xl">
-                        <Mail className="w-4 h-4 text-emerald-600" />
+                      <div className="bg-rose-100 p-2 rounded-xl">
+                        <ShieldAlert className="w-4 h-4 text-rose-600" />
                       </div>
-                      <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Email ủy quyền</span>
+                      <span className="text-[10px] font-black text-rose-400 uppercase tracking-widest">Danh sách đen</span>
                     </div>
-                    <p className="text-3xl font-display font-black text-emerald-900">{authorizedEmails.length}</p>
+                    <p className="text-3xl font-display font-black text-rose-900">{blacklist.length}</p>
                   </div>
                 </div>
 
-                {/* Authorized Emails Section */}
+                {/* Blacklist Section */}
                 <section>
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-4 bg-emerald-500 rounded-full" />
-                      <h4 className="text-sm font-bold text-slate-800">Ủy quyền truy cập (Whitelist)</h4>
+                      <div className="w-1.5 h-4 bg-rose-500 rounded-full" />
+                      <h4 className="text-sm font-bold text-slate-800">Danh sách đen (Blacklist)</h4>
                     </div>
                     <button 
-                      onClick={fetchAuthorizedEmails}
+                      onClick={fetchBlacklist}
                       className="p-1.5 hover:bg-slate-100 text-slate-500 rounded-lg transition-colors"
                     >
-                      <RefreshCcw className={cn("w-3.5 h-3.5", isFetchingAuthEmails && "animate-spin")} />
+                      <RefreshCcw className={cn("w-3.5 h-3.5", isFetchingBlacklist && "animate-spin")} />
                     </button>
                   </div>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-50 p-5 rounded-2xl border border-slate-100 mb-4">
-                    <div className="space-y-1.5 md:col-span-2">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Email ủy quyền</label>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50 p-5 rounded-2xl border border-slate-100 mb-4">
+                    <div className="space-y-1.5 md:col-span-3">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Thêm email vào danh sách đen</label>
                       <input 
                         type="email"
                         placeholder="VD: user@hospital.com"
-                        value={newAuthEmail}
-                        onChange={(e) => setNewAuthEmail(e.target.value)}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                        value={newBlacklistEmail}
+                        onChange={(e) => setNewBlacklistEmail(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-rose-500 outline-none transition-all"
                       />
                     </div>
-                    <div className="flex items-end gap-2">
-                      <div className="flex-1 space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Vai trò</label>
-                        <select 
-                          value={newAuthRole}
-                          onChange={(e) => setNewAuthRole(e.target.value as 'user' | 'admin')}
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all appearance-none cursor-pointer"
-                        >
-                          <option value="user">Người dùng</option>
-                          <option value="admin">Quản trị viên</option>
-                        </select>
-                      </div>
+                    <div className="flex items-end">
                       <button 
-                        onClick={addAuthorizedEmail}
-                        disabled={isAddingAuthEmail || !newAuthEmail}
-                        className="p-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-all disabled:opacity-50 shadow-lg shadow-emerald-100"
+                        onClick={() => addToBlacklist()}
+                        disabled={isAddingToBlacklist || !newBlacklistEmail}
+                        className="w-full py-2.5 bg-rose-600 text-white rounded-xl hover:bg-rose-700 transition-all disabled:opacity-50 shadow-lg shadow-rose-100 flex items-center justify-center gap-2"
                       >
-                        {isAddingAuthEmail ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                        {isAddingToBlacklist ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />}
+                        <span className="text-xs font-bold">Chặn</span>
                       </button>
                     </div>
+                  </div>
+
+                  {/* User Search for Blacklist */}
+                  <div className="bg-white border border-slate-100 rounded-2xl p-5 mb-4 shadow-sm">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Search className="w-4 h-4 text-slate-400" />
+                      <h5 className="text-xs font-bold text-slate-700">Tìm kiếm người dùng để chặn</h5>
+                    </div>
+                    <div className="flex gap-2 mb-4">
+                      <input 
+                        type="text"
+                        placeholder="Nhập email người dùng..."
+                        value={userSearchQuery}
+                        onChange={(e) => setUserSearchQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && searchUsers()}
+                        className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
+                      <button 
+                        onClick={searchUsers}
+                        disabled={isSearchingUsers || !userSearchQuery}
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all disabled:opacity-50 text-xs font-bold"
+                      >
+                        {isSearchingUsers ? <Loader2 className="w-4 h-4 animate-spin" /> : "Tìm kiếm"}
+                      </button>
+                    </div>
+
+                    {userSearchResults.length > 0 && (
+                      <div className="space-y-2 max-h-40 overflow-y-auto no-scrollbar border-t border-slate-50 pt-4">
+                        {userSearchResults.map((u) => (
+                          <div key={u.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-xl transition-colors">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden">
+                                {u.photoURL ? (
+                                  <img src={u.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                ) : (
+                                  <UserIcon className="w-4 h-4 text-slate-400" />
+                                )}
+                              </div>
+                              <div>
+                                <p className="text-xs font-bold text-slate-700">{u.displayName || 'Người dùng'}</p>
+                                <p className="text-[10px] text-slate-400">{u.email}</p>
+                              </div>
+                            </div>
+                            <button 
+                              onClick={() => addToBlacklist(u.email)}
+                              className="px-3 py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-[10px] font-bold transition-colors"
+                            >
+                              Chặn truy cập
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm max-h-60 overflow-y-auto no-scrollbar">
                     <table className="w-full text-left text-xs">
                       <thead className="bg-slate-50/50 text-slate-400 font-bold uppercase tracking-widest border-b border-slate-100 sticky top-0 z-10">
                         <tr>
-                          <th className="px-6 py-3">Email</th>
-                          <th className="px-6 py-3">Vai trò</th>
+                          <th className="px-6 py-3">Email bị chặn</th>
+                          <th className="px-6 py-3">Ngày chặn</th>
                           <th className="px-6 py-3 text-right">Hành động</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
-                        {authorizedEmails.length === 0 ? (
+                        {blacklist.length === 0 ? (
                           <tr>
-                            <td colSpan={3} className="px-6 py-8 text-center text-slate-400 italic">Chưa có email nào được ủy quyền</td>
+                            <td colSpan={3} className="px-6 py-8 text-center text-slate-400 italic">Chưa có tài khoản nào bị chặn</td>
                           </tr>
                         ) : (
-                          authorizedEmails.map((ae) => (
+                          blacklist.map((ae) => (
                             <tr key={ae.email} className="hover:bg-slate-50/30 transition-colors group">
                               <td className="px-6 py-3 font-medium text-slate-700">{ae.email}</td>
-                              <td className="px-6 py-3">
-                                <span className={cn(
-                                  "px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider",
-                                  ae.role === 'admin' ? "bg-amber-50 text-amber-600" : "bg-indigo-50 text-indigo-600"
-                                )}>
-                                  {ae.role === 'admin' ? 'Admin' : 'User'}
-                                </span>
+                              <td className="px-6 py-3 text-slate-400">
+                                {ae.createdAt?.seconds ? new Date(ae.createdAt.seconds * 1000).toLocaleDateString('vi-VN') : '---'}
                               </td>
                               <td className="px-6 py-3 text-right">
                                 <button 
-                                  onClick={() => removeAuthorizedEmail(ae.email)}
-                                  className="p-1.5 hover:bg-rose-50 text-rose-400 hover:text-rose-500 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                  onClick={() => removeFromBlacklist(ae.email)}
+                                  className="p-1.5 hover:bg-emerald-50 text-emerald-400 hover:text-emerald-500 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                                  title="Gỡ khỏi danh sách đen"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <ShieldCheck className="w-3.5 h-3.5" />
                                 </button>
                               </td>
                             </tr>
@@ -4863,6 +4936,13 @@ export default function App() {
                                 <td className="px-6 py-4 text-right">
                                   <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button 
+                                      onClick={() => sendAdminPasswordResetEmail(u.email)}
+                                      className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors"
+                                      title="Gửi email đặt lại mật khẩu"
+                                    >
+                                      <Mail className="w-4 h-4" />
+                                    </button>
+                                    <button 
                                       onClick={async () => {
                                         const newPass = "12345678"; // Default reset password to avoid prompt()
                                         try {
@@ -4872,7 +4952,7 @@ export default function App() {
                                         }
                                       }}
                                       className="p-2 hover:bg-amber-50 text-amber-600 rounded-lg transition-colors"
-                                      title="Đặt lại mật khẩu (mặc định: 12345678)"
+                                      title="Đặt lại mật khẩu trực tiếp"
                                     >
                                       <KeyRound className="w-4 h-4" />
                                     </button>

@@ -25,18 +25,25 @@ process.env.GOOGLE_CLOUD_PROJECT = firebaseConfig.projectId;
 // Initialize Firebase Admin (for token verification)
 let adminApp: admin.app.App;
 try {
-  if (admin.apps.length === 0) {
+  const appName = "user-project-app";
+  const existingApp = admin.apps.find(app => app?.name === appName);
+  
+  if (!existingApp) {
     adminApp = admin.initializeApp({ 
       projectId: firebaseConfig.projectId 
-    });
-    console.log(`Firebase Admin initialized for project: ${firebaseConfig.projectId}`);
+    }, appName);
+    console.log(`Firebase Admin initialized for project: ${firebaseConfig.projectId} (App: ${appName})`);
   } else {
-    adminApp = admin.apps[0];
-    console.log(`Using existing Firebase Admin app for project: ${adminApp.options.projectId}`);
+    adminApp = existingApp!;
+    console.log(`Using existing Firebase Admin app: ${adminApp.name}`);
   }
 } catch (e: any) {
   console.error("Failed to initialize Firebase Admin:", e.message);
-  adminApp = admin.apps[0];
+  if (admin.apps.length > 0) {
+    adminApp = admin.apps[0]!;
+  } else {
+    adminApp = admin.initializeApp({ projectId: firebaseConfig.projectId });
+  }
 }
 
 // Initialize Firestore with fallback logic
@@ -83,7 +90,7 @@ async function startServer() {
 
   // Initialize firestore inside startServer to handle async
   firestore = await getFirestoreInstance();
-  const auth = admin.auth();
+  const auth = admin.auth(adminApp);
 
   app.use(express.json());
 
@@ -178,8 +185,8 @@ async function startServer() {
       results.auth.message = e.message;
       results.auth.code = e.code;
       if (e.message?.includes("Identity Toolkit API")) {
-        results.auth.advice = "Kích hoạt Identity Toolkit API trong Google Cloud Console.";
-        results.auth.link = `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`;
+        results.auth.advice = "Kích hoạt Identity Toolkit API trong Firebase Console (Authentication -> Get Started) hoặc Google Cloud Console.";
+        results.auth.link = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication`;
       }
     }
 
@@ -285,8 +292,8 @@ async function startServer() {
         if (signUpData.error?.status === 'PERMISSION_DENIED' || signUpData.error?.message?.includes('Identity Toolkit API')) {
           return res.status(500).json({ 
             error: "Lỗi hệ thống: Identity Toolkit API chưa được kích hoạt.",
-            details: `Bạn PHẢI kích hoạt Identity Toolkit API tại: https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}\n\nSau khi kích hoạt, hãy đợi 1-2 phút rồi thử lại.`,
-            apiLink: `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`
+            details: `Bạn PHẢI kích hoạt Identity Toolkit API.\n\nCách 1 (Dễ nhất): Vào Firebase Console -> Authentication -> Nhấn 'Get Started'.\nLink: https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication\n\nCách 2: Kích hoạt trực tiếp API tại Google Cloud Console.\nLink: https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`,
+            apiLink: `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication`
           });
         }
         
@@ -325,12 +332,9 @@ async function startServer() {
       try {
         await firestore.collection("users").doc(uid).set(userData);
         
-        // 4. Also add to authorized_emails for consistency
-        await firestore.collection("authorized_emails").doc(email.toLowerCase()).set({
-          role: role || "user",
-          addedBy: (req as any).user.uid,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+        // 4. Also add to blacklist if needed (optional)
+        // Note: By default users are NOT in blacklist when created
+        // But we keep the logic structure if you want to track something else
       } catch (dbError: any) {
         // Suppress expected permission logs as we have a client-side fallback
         if (!dbError.message.includes("PERMISSION_DENIED") && !dbError.message.includes("574247538815")) {
@@ -354,8 +358,8 @@ async function startServer() {
       if (error.message.includes("Identity Toolkit API") || error.code === 'auth/internal-error') {
         return res.status(500).json({ 
           error: "Lỗi hệ thống: Identity Toolkit API chưa được kích hoạt.",
-          details: `Bạn PHẢI kích hoạt Identity Toolkit API tại: https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}\n\nSau khi kích hoạt, hãy đợi 1-2 phút rồi thử lại.`,
-          apiLink: `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`
+          details: `Bạn PHẢI kích hoạt Identity Toolkit API.\n\nCách 1 (Dễ nhất): Vào Firebase Console -> Authentication -> Nhấn 'Get Started'.\nLink: https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication\n\nCách 2: Kích hoạt trực tiếp API tại Google Cloud Console.\nLink: https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`,
+          apiLink: `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication`
         });
       }
 
@@ -455,7 +459,7 @@ async function startServer() {
       users: finalUsers,
       authSyncError: authError && (authError.includes("Identity Toolkit API") || authError.includes("403")) ? "API_DISABLED" : (firestoreError ? "FIRESTORE_ERROR" : null),
       details: authError || firestoreError,
-      apiLink: `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${firebaseConfig.projectId}`,
+      apiLink: `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication`,
       ...debugInfo
     });
   });
@@ -464,7 +468,7 @@ async function startServer() {
   app.post("/api/admin/reset-password", checkAdmin, async (req, res) => {
     const { uid, newPassword } = req.body;
     try {
-      await auth.updateUser(uid, {
+      await admin.auth(adminApp).updateUser(uid, {
         password: newPassword,
       });
       res.json({ success: true });
@@ -473,7 +477,9 @@ async function startServer() {
       const isApiDisabled = error.message.includes("Identity Toolkit API") || error.message.includes("403");
       res.status(400).json({ 
         error: isApiDisabled ? "Identity Toolkit API chưa được kích hoạt" : error.message,
-        isApiDisabled
+        details: isApiDisabled ? `Bạn PHẢI kích hoạt Identity Toolkit API.\n\nCách 1 (Dễ nhất): Vào Firebase Console -> Authentication -> Nhấn 'Get Started'.\nLink: https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null,
+        isApiDisabled,
+        apiLink: isApiDisabled ? `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null
       });
     }
   });
@@ -483,18 +489,17 @@ async function startServer() {
     const { uid, email } = req.body;
     try {
       // 1. Delete from Auth
-      await auth.deleteUser(uid);
+      await admin.auth(adminApp).deleteUser(uid);
       
-      // 2. Delete from Firestore (Optional on server)
+      // 2. Delete from Firestore
       let dbSuccess = true;
       try {
         await firestore.collection("users").doc(uid).delete();
         if (email) {
-          await firestore.collection("authorized_emails").doc(email.toLowerCase()).delete();
+          await firestore.collection("blacklist").doc(email.toLowerCase()).delete();
         }
       } catch (dbError: any) {
-        // Suppress expected permission logs as we have a client-side fallback
-        if (!dbError.message.includes("PERMISSION_DENIED") && !dbError.message.includes("574247538815")) {
+        if (!dbError.message.includes("PERMISSION_DENIED")) {
           console.error("Firestore delete failed during user deletion:", dbError.message);
         }
         dbSuccess = false;
@@ -506,7 +511,9 @@ async function startServer() {
       const isApiDisabled = error.message.includes("Identity Toolkit API") || error.message.includes("403");
       res.status(400).json({ 
         error: isApiDisabled ? "Identity Toolkit API chưa được kích hoạt" : error.message,
-        isApiDisabled
+        details: isApiDisabled ? `Bạn PHẢI kích hoạt Identity Toolkit API.\n\nCách 1 (Dễ nhất): Vào Firebase Console -> Authentication -> Nhấn 'Get Started'.\nLink: https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null,
+        isApiDisabled,
+        apiLink: isApiDisabled ? `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication` : null
       });
     }
   });
