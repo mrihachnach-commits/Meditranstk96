@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/tinyvault",
+      "destination": "https://tinyvault.space/api/upload"
+    }
+  ]
+}

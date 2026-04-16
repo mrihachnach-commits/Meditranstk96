@@ -1,0 +1,116 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Playfair Display", serif;
+  --font-serif: "Cormorant Garamond", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans antialiased;
+  }
+}
+
+.pdf-container canvas {
+  @apply shadow-2xl rounded-lg border border-slate-200 bg-white min-h-[500px] block;
+}
+
+.markdown-body {
+  @apply prose prose-slate max-w-none prose-headings:font-display prose-headings:text-slate-800 prose-p:leading-relaxed prose-strong:text-indigo-900;
+}
+
+.markdown-body p {
+  @apply mb-4 last:mb-0;
+}
+
+.markdown-body ul, .markdown-body ol {
+  @apply mb-4 last:mb-0;
+}
+
+.markdown-body li {
+  @apply mb-1;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  @apply mt-8 mb-4 first:mt-0;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full hover:bg-slate-400 transition-colors;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+.animate-shake {
+  animation: shake 0.2s ease-in-out 0s 2;
+}
+
+/* PDF Text Layer Styles */
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  text-rendering: optimizeLegibility;
+  pointer-events: auto;
+}
+
+.textLayer span,
+.textLayer br,
+.textLayer div {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.textLayer ::selection {
+  background: rgba(79, 70, 229, 0.4);
+}
+
+.textLayer .endOfLine {
+  display: block;
+  position: static;
+}
+
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  left: 0;
+  top: 100%;
+  right: 0;
+  bottom: 0;
+  z-index: -1;
+  cursor: default;
+  user-select: none;
+}

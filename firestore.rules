@@ -1,0 +1,151 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (UID)
+    // Fields:
+    //   - uid: string (required) - The unique identifier for the user.
+    //   - email: string (required) - The user's email address.
+    //   - displayName: string (optional) - The user's display name.
+    //   - photoURL: string (optional) - The user's profile picture URL.
+    //   - createdAt: timestamp (optional) - When the user account was created.
+    //   - role: string (optional) - 'admin' or 'user'
+    //
+    // Collection: authorized_emails
+    // Document ID: email (string)
+    // Fields:
+    //   - role: string (required) - 'admin' or 'user'
+    //   - addedBy: string (optional) - UID of the admin who added this
+    //   - createdAt: timestamp (optional)
+    //
+    // Collection: apiKeys
+    // Document ID: keyId (Auto-generated)
+    // Fields:
+    //   - ownerId: string (required) - The UID of the user who owns this key.
+    //   - name: string (required) - A friendly name for the key.
+    //   - value: string (required) - The actual API key value.
+    //   - engine: string (required) - The translation engine this key is for.
+    //   - createdAt: timestamp (optional) - When the key was added.
+    //   - lastUsed: timestamp (optional) - When the key was last used.
+    //
+    // Collection: users/{userId}/documents/{docId}/pages
+    // Document ID: pageNum (Page number)
+    // Fields:
+    //   - content: string (required) - The translated text content.
+    //   - status: string (required) - The status of the translation.
+    //   - updatedAt: timestamp (optional) - When the translation was last updated.
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.ownerId;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "hoctap853@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // Debugging collection
+    match /test_connection/{docId} {
+      allow read, write: if true;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'role', 'updatedAt']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.email is string && isValidEmail(data.email) &&
+             (data.displayName == null || (data.displayName is string && data.displayName.size() < 100)) &&
+             (data.photoURL == null || (data.photoURL is string && isValidUrl(data.photoURL))) &&
+             (data.createdAt == null || data.createdAt is timestamp) &&
+             (data.updatedAt == null || data.updatedAt is timestamp);
+    }
+
+    function isValidApiKey(data) {
+      return hasOnlyAllowedFields(['ownerId', 'name', 'value', 'engine', 'createdAt', 'lastUsed', 'status']) &&
+             data.ownerId is string && data.ownerId == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
+             data.value is string && data.value.size() > 0 && data.value.size() < 200 &&
+             data.engine in ['gemini', 'openai', 'anthropic'] &&
+             (!('status' in data) || data.status in ['active', 'error']);
+    }
+
+    function isValidTranslation(data) {
+      return hasOnlyAllowedFields(['content', 'status', 'updatedAt']) &&
+             data.content is string && data.content.size() < 500000 && // Limit size to 500KB per page
+             data.status in ['success', 'error', 'loading'] &&
+             (data.updatedAt == null || data.updatedAt is timestamp);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) || isAdmin();
+      allow update: if (isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /authorized_emails/{email} {
+      allow read: if isAuthenticated() && (request.auth.token.email == email || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /apiKeys/{keyId} {
+      allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidApiKey(request.resource.data);
+      allow update: if isAuthenticated() && isDocOwner() && isValidApiKey(request.resource.data);
+      allow delete: if isAuthenticated() && (isDocOwner() || isAdmin());
+    }
+
+    match /users/{userId}/folders/{folderId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+    }
+
+    match /users/{userId}/documents/{docId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+      
+      match /pages/{pageNum} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if (isOwner(userId) || isAdmin()) && isValidTranslation(request.resource.data);
+      }
+    }
+  }
+}
