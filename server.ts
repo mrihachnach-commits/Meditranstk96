@@ -193,6 +193,7 @@ async function startServer() {
       const decodedToken = verifyData.users[0];
       decodedToken.uid = decodedToken.localId; // Map localId to uid for consistency
       console.log(`[Admin Check] Verified user: ${decodedToken.email} (${decodedToken.uid})`);
+      console.log(`[Admin Check] Full verifyData: ${JSON.stringify(verifyData)}`);
 
       // 2. Check Admin Status
       let userData: any = null;
@@ -216,10 +217,10 @@ async function startServer() {
         // If it's a permission error, we might still be a primary admin
       }
       
-      const isPrimaryAdmin = decodedToken.email === "hoanghiep1296@gmail.com" || 
-                             decodedToken.email === "mrihachnach@gmail.com" || 
-                             decodedToken.email === "admin@gmail.com" ||
-                             decodedToken.email === "hoctap853@gmail.com";
+      const isPrimaryAdmin = decodedToken.email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
+                             decodedToken.email?.toLowerCase() === "mrihachnach@gmail.com" || 
+                             decodedToken.email?.toLowerCase() === "admin@gmail.com" ||
+                             decodedToken.email?.toLowerCase() === "hoctap853@gmail.com";
       
       const isAdmin = userData?.role === "admin" || isPrimaryAdmin;
 

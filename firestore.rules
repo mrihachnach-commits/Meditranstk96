@@ -70,16 +70,19 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() &&
-        (
-          (request.auth.token.email != null && request.auth.token.email in ["hoctap853@gmail.com", "hoanghiep1296@gmail.com", "mrihachnach@gmail.com", "admin@gmail.com"]) ||
-          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
-        );
+      return isAuthenticated() && (
+        (request.auth.token.email != null && request.auth.token.email.lower() in ["hoctap853@gmail.com", "hoanghiep1296@gmail.com", "mrihachnach@gmail.com", "admin@gmail.com"]) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
     }
 
     // Debugging collection
     match /test_connection/{docId} {
+      allow read, write: if true;
+    }
+
+    match /test/{docId} {
       allow read, write: if true;
     }
 
@@ -100,15 +103,15 @@ service cloud.firestore {
     function isValidApiKey(data) {
       return hasOnlyAllowedFields(['ownerId', 'name', 'value', 'engine', 'createdAt', 'lastUsed', 'status']) &&
              data.ownerId is string && data.ownerId == request.auth.uid &&
-             data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
-             data.value is string && data.value.size() > 0 && data.value.size() < 200 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.value is string && data.value.size() > 0 && data.value.size() < 500 &&
              data.engine in ['gemini', 'openai', 'anthropic'] &&
              (!('status' in data) || data.status in ['active', 'error']);
     }
 
     function isValidTranslation(data) {
       return hasOnlyAllowedFields(['content', 'status', 'updatedAt']) &&
-             data.content is string && data.content.size() < 500000 && // Limit size to 500KB per page
+             data.content is string && data.content.size() < 1000000 && // Limit size to 1MB per page
              data.status in ['success', 'error', 'loading'] &&
              (data.updatedAt == null || data.updatedAt is timestamp);
     }
@@ -120,8 +123,8 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow list: if isAdmin();
-      allow create: if isOwner(userId) || isAdmin();
-      allow update: if (isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin();
+      allow create: if isAuthenticated();
+      allow update: if (isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)) || isAdmin();
       allow delete: if isAdmin();
     }
 

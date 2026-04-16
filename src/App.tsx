@@ -647,7 +647,10 @@ export default function App() {
           const userSnap = await getDoc(userRef);
           
           // CRITICAL: Always check if this specific email should be admin
-          const isAdminEmail = currentUser.email === "hoanghiep1296@gmail.com" || currentUser.email === "mrihachnach@gmail.com" || currentUser.email === "admin@gmail.com" || currentUser.email === "hoctap853@gmail.com";
+          const isAdminEmail = currentUser.email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
+                               currentUser.email?.toLowerCase() === "mrihachnach@gmail.com" || 
+                               currentUser.email?.toLowerCase() === "admin@gmail.com" || 
+                               currentUser.email?.toLowerCase() === "hoctap853@gmail.com";
           
           if (!userSnap.exists()) {
             // Check for blacklist
@@ -727,7 +730,10 @@ export default function App() {
           console.error("Error fetching user data from Firestore:", error);
           
           // Fallback if Firestore is completely blocked
-          const isAdminEmail = currentUser.email === "hoanghiep1296@gmail.com" || currentUser.email === "mrihachnach@gmail.com" || currentUser.email === "admin@gmail.com" || currentUser.email === "hoctap853@gmail.com";
+          const isAdminEmail = currentUser.email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
+                               currentUser.email?.toLowerCase() === "mrihachnach@gmail.com" || 
+                               currentUser.email?.toLowerCase() === "admin@gmail.com" || 
+                               currentUser.email?.toLowerCase() === "hoctap853@gmail.com";
           if (isAdminEmail) {
             setUserRole('admin');
           } else {
@@ -894,7 +900,10 @@ export default function App() {
     if (userRole !== 'admin' || !email) return;
 
     // Don't allow blacklisting admins
-    const isAdminEmail = email === "hoanghiep1296@gmail.com" || email === "mrihachnach@gmail.com" || email === "admin@gmail.com" || email === "hoctap853@gmail.com";
+    const isAdminEmail = email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
+                         email?.toLowerCase() === "mrihachnach@gmail.com" || 
+                         email?.toLowerCase() === "admin@gmail.com" || 
+                         email?.toLowerCase() === "hoctap853@gmail.com";
     if (isAdminEmail) {
       showToast("Không thể chặn tài khoản quản trị viên.", 'error');
       return;
