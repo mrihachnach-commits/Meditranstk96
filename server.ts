@@ -194,39 +194,61 @@ async function startServer() {
       console.log(`[Admin Check] Full verifyData: ${JSON.stringify(verifyData)}`);
 
       // 2. Check Admin Status
+      const userEmail = (decodedToken.email || "").toLowerCase();
+      const isPrimaryAdmin = userEmail === "hoanghiep1296@gmail.com" || 
+                             userEmail === "mrihachnach@gmail.com" || 
+                             userEmail === "admin@gmail.com" ||
+                             userEmail === "hoctap853@gmail.com";
+
+      console.log(`[Admin Check] Processing user: ${userEmail}, isPrimaryAdmin: ${isPrimaryAdmin}`);
+
       let userData: any = null;
       try {
-        // Use Admin SDK for server-side checks to bypass security rules
+        // Use Admin SDK for server-side checks
         const db = getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
         const userDoc = await db.collection("users").doc(decodedToken.uid).get();
         
-        if (!userDoc.exists) {
-          return res.status(403).json({ error: "Tài khoản của bạn chưa được thiết lập hoặc đã bị xóa." });
+        if (userDoc.exists) {
+          userData = userDoc.data();
+          console.log(`[Admin Check] User document found. Role: ${userData?.role}`);
+        } else {
+          console.log(`[Admin Check] No user document found for UID: ${decodedToken.uid}`);
+          if (!isPrimaryAdmin) {
+            return res.status(403).json({ error: "Tài khoản của bạn chưa được thiết lập hoặc đã bị xóa." });
+          }
         }
-        userData = userDoc.data();
         
-        // Check blacklist
-        if (decodedToken.email) {
-          const blacklistDoc = await db.collection("blacklist").doc(decodedToken.email.toLowerCase()).get();
+        // Check blacklist/blocked status
+        if (userEmail) {
+          const blacklistDoc = await db.collection("blacklist").doc(userEmail).get();
           if (blacklistDoc.exists) {
+            console.log(`[Admin Check] User ${userEmail} is in blacklist.`);
             return res.status(403).json({ error: "Tài khoản của bạn đã bị chặn truy cập." });
           }
         }
       } catch (dbError: any) {
-        console.error("Firestore fetch failed in admin check:", dbError.message);
-        // If it's a permission error, we might still be a primary admin
+        // If Admin SDK fails (highly likely in some environments), log it as warning
+        console.warn(`[Admin Check] Admin SDK DB fetch failed: ${dbError.message}`);
+        
+        // Primary admins can skip DB check if it fails
+        if (!isPrimaryAdmin) {
+          // Attempt REST fallback for non-primary admins if possible
+          try {
+             const restUser = await firestoreRest.getDoc("users", decodedToken.uid, idToken);
+             if (restUser.exists) {
+               userData = restUser.data;
+               console.log(`[Admin Check] REST Fallback success. Role: ${userData?.role}`);
+             }
+          } catch (restErr: any) {
+             console.error(`[Admin Check] REST Fallback also failed: ${restErr.message}`);
+          }
+        }
       }
-      
-      const isPrimaryAdmin = decodedToken.email?.toLowerCase() === "hoanghiep1296@gmail.com" || 
-                             decodedToken.email?.toLowerCase() === "mrihachnach@gmail.com" || 
-                             decodedToken.email?.toLowerCase() === "admin@gmail.com" ||
-                             decodedToken.email?.toLowerCase() === "hoctap853@gmail.com";
-      
-      console.log(`[Admin Check] User ${decodedToken.email} isPrimaryAdmin: ${isPrimaryAdmin}`);
       
       const isAdmin = userData?.role === "admin" || isPrimaryAdmin;
 
       if (!isAdmin) {
+        console.log(`[Admin Check] Access denied for ${userEmail}. Not an admin.`);
         return res.status(403).json({ error: "Forbidden: Admin access required" });
       }
       req.user = decodedToken;
@@ -442,20 +464,37 @@ async function startServer() {
   // Admin: List Users (Source from Firestore only to avoid project mismatch)
   app.get("/api/admin/list-users", checkAdmin, async (req, res) => {
     try {
-      // Use Admin SDK for Firestore to bypass security rules for administrative tasks
-      const usersSnapshot = await getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId).collection("users").get();
-      const users = usersSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...(doc.data() as any)
-      }));
-      
-      res.json({ 
-        success: true, 
-        users,
-        projectId: firebaseConfig.projectId,
-        databaseId: firebaseConfig.firestoreDatabaseId,
-        source: "admin-sdk"
-      });
+      // 1. Try Admin SDK first (fastest, bypasses rules)
+      try {
+        const usersSnapshot = await getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId).collection("users").get();
+        const users = usersSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...(doc.data() as any)
+        }));
+        
+        return res.json({ 
+          success: true, 
+          users,
+          projectId: firebaseConfig.projectId,
+          databaseId: firebaseConfig.firestoreDatabaseId,
+          source: "admin-sdk"
+        });
+      } catch (adminError: any) {
+        console.warn("[Admin] Admin SDK list-users failed, falling back to REST API:", adminError.message);
+        
+        // 2. Fallback to REST API using the admin's token
+        // This works because the admin's token HAS list permissions in security rules
+        const idToken = req.headers.authorization.split("Bearer ")[1];
+        const users = await firestoreRest.listDocs("users", idToken);
+        
+        res.json({ 
+          success: true, 
+          users,
+          projectId: firebaseConfig.projectId,
+          databaseId: firebaseConfig.firestoreDatabaseId,
+          source: "rest-api-fallback"
+        });
+      }
     } catch (error: any) {
       console.error("[Admin] List users failed:", error.message);
       res.status(500).json({ error: "Không thể lấy danh sách người dùng: " + error.message });

@@ -1207,7 +1207,7 @@ export default function App() {
   const [dictionaryPosition, setDictionaryPosition] = useState({ x: 0, y: 0 });
   
   const clearFile = () => {
-    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    if (fileUrl && fileUrl.startsWith('blob:')) URL.revokeObjectURL(fileUrl);
     
     // Increment fileId to invalidate all pending translations for the previous file
     fileIdRef.current += 1;
@@ -1237,6 +1237,36 @@ export default function App() {
     
     if (renderTaskRef.current) {
       renderTaskRef.current.cancel();
+    }
+
+    setShowExplorer(true);
+  };
+
+  const handleDeleteCurrentFile = async () => {
+    if (!fileId || isLocalOnly) {
+      clearFile();
+      return;
+    }
+
+    if (window.confirm(`Bạn có chắc chắn muốn XÓA vĩnh viễn tệp "${currentFileName}" khỏi hệ thống? Hành động này không thể hoàn tác.`)) {
+      try {
+        const userId = auth.currentUser?.uid;
+        if (!userId) {
+          showToast("Vui lòng đăng nhập để thực hiện thao tác này", 'error');
+          return;
+        }
+        
+        await deleteDoc(doc(db, `users/${userId}/documents`, fileId));
+        showToast("Đã xóa tài liệu thành công", 'success');
+        clearFile();
+      } catch (error: any) {
+        console.error("Lỗi khi xóa tài liệu:", error);
+        if (error.message?.includes('permission-denied') || error.message?.includes('PERMISSION_DENIED')) {
+          showToast("Bạn không có quyền xóa tài liệu này.", 'error');
+        } else {
+          showToast("Không thể xóa tài liệu. Vui lòng thử lại sau.", 'error');
+        }
+      }
     }
   };
 
@@ -2645,13 +2675,7 @@ export default function App() {
         <header className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-4 shrink-0 shadow-sm z-30">
           {file || pdfDoc ? (
             <button 
-              onClick={() => {
-                setPdfDoc(null);
-                setFile(null);
-                setFileUrl(null);
-                setFileId(null);
-                setShowExplorer(true);
-              }}
+              onClick={clearFile}
               className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-500 mr-2"
               title="Quay lại quản lý file"
             >
@@ -2673,11 +2697,11 @@ export default function App() {
           {pdfDoc && (
             <button 
               onClick={clearFile}
-              className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-rose-50 text-rose-500 hover:text-rose-600 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider"
-              title="Xóa tài liệu hiện tại"
+              className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider"
+              title="Đóng tài liệu hiện tại"
             >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Xóa PDF</span>
+              <X className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Đóng file</span>
             </button>
           )}
 
@@ -2824,7 +2848,20 @@ export default function App() {
                       </button>
                     )}
 
-                    {/* Mobile Actions - Settings & Delete */}
+                    {fileUrl && !isLocalOnly && (
+                      <a 
+                        href={fileUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500 text-white text-[10px] font-bold rounded-full hover:bg-emerald-600 transition-all shadow-sm ml-2"
+                        title="Tải tệp PDF gốc về máy"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>TẢI PDF GỐC</span>
+                      </a>
+                    )}
+
+                    {/* Mobile Actions - Settings & Close */}
                     <div className="flex md:hidden items-center gap-0.5 mr-2">
                       <button 
                         onClick={() => setShowSettings(true)}
@@ -2835,10 +2872,10 @@ export default function App() {
                       </button>
                       <button 
                         onClick={clearFile}
-                        className="p-1.5 text-slate-400 active:text-rose-500 transition-colors"
-                        title="Xóa PDF"
+                        className="p-1.5 text-slate-400 active:text-indigo-600 transition-colors"
+                        title="Đóng PDF"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
 
@@ -3064,9 +3101,9 @@ export default function App() {
                       </button>
                       <button 
                         onClick={clearFile}
-                        className="p-1.5 text-slate-400 active:text-rose-500 transition-colors"
+                        className="p-1.5 text-slate-400 active:text-indigo-600 transition-colors"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
                     <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em]">Translation</span>

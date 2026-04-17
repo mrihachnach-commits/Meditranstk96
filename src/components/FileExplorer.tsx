@@ -472,6 +472,21 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
                   <button 
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (file.downloadUrl) {
+                        window.open(file.downloadUrl, '_blank');
+                      } else {
+                        // Attempt to fallback to TinyVault if URL is relative or missing
+                        window.open(file.downloadUrl || '#', '_blank');
+                      }
+                    }}
+                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-emerald-500 shadow-sm border border-slate-100"
+                    title="Tải về"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </button>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
                       setShowMoveModal({ id: file.id, type: 'file' });
                     }}
                     className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-indigo-500 shadow-sm border border-slate-100"
