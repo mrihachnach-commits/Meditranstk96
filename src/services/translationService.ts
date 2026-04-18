@@ -10,6 +10,7 @@ export interface TranslationService {
   translateMedicalPage(options: TranslationOptions): Promise<string>;
   hasApiKey(): Promise<boolean>;
   lookupMedicalTerm?(term: string): Promise<any>;
+  summarizeContent?(content: string, type: 'page' | 'document' | 'chapter', signal?: AbortSignal): AsyncGenerator<string>;
 }
 
 export type TranslationEngine = 'gemini-flash' | 'gemini-pro' | 'medical-specialized';

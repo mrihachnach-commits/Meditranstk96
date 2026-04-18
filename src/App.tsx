@@ -61,7 +61,10 @@ import {
   ExternalLink,
   Mail,
   Eye,
-  EyeOff
+  EyeOff,
+  ScrollText,
+  FileSearch,
+  BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -236,6 +239,20 @@ export default function App() {
   const [allFolders, setAllFolders] = useState<{id: string, name: string}[]>([]);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean | null>(null);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null);
+  
+  // Summarization State
+  const [translationPanelMode, setTranslationPanelMode] = useState<'translation' | 'summary'>('translation');
+  const [summaryText, setSummaryText] = useState<string>('');
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [summaryRange, setSummaryRange] = useState<{from: number, to: number}>({from: 1, to: 1});
+  const summarySignalRef = useRef<AbortController | null>(null);
+
+  // Initialize summary range when numPages changes
+  useEffect(() => {
+    if (numPages > 0) {
+      setSummaryRange(prev => ({ ...prev, to: Math.min(numPages, prev.from + 4) }));
+    }
+  }, [numPages]);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
@@ -1235,6 +1252,14 @@ export default function App() {
     isRenderingRef.current = false;
     translatingPagesRef.current.clear();
     
+    // Reset Summary State
+    setTranslationPanelMode('translation');
+    setSummaryText('');
+    setIsSummarizing(false);
+    if (summarySignalRef.current) {
+      summarySignalRef.current.abort();
+    }
+    
     if (renderTaskRef.current) {
       renderTaskRef.current.cancel();
     }
@@ -1267,6 +1292,94 @@ export default function App() {
           showToast("Không thể xóa tài liệu. Vui lòng thử lại sau.", 'error');
         }
       }
+    }
+  };
+
+  const handleSummarize = async (type: 'page' | 'document' | 'chapter') => {
+    if (!translationService.current) return;
+    
+    let contentToSummarize = "";
+    
+    if (type === 'page') {
+      contentToSummarize = translations[currentPage]?.content || "";
+      if (!contentToSummarize) {
+        showToast("Vui lòng dịch trang này trước khi tóm tắt.", 'info');
+        return;
+      }
+    } else if (type === 'chapter') {
+      const startPage = Math.max(1, summaryRange.from);
+      const endPage = Math.min(numPages, summaryRange.to);
+      
+      if (startPage > endPage) {
+        showToast("Khoảng trang không hợp lệ.", 'error');
+        return;
+      }
+
+      const pages = Object.keys(translations)
+        .map(Number)
+        .filter(p => p >= startPage && p <= endPage)
+        .sort((a, b) => a - b);
+        
+      if (pages.length === 0) {
+        showToast(`Không tìm thấy trang nào được dịch trong khoảng từ ${startPage} đến ${endPage}.`, 'info');
+        return;
+      }
+      
+      contentToSummarize = pages
+        .map(p => `--- Trang ${p} ---\n${translations[p].content}`)
+        .join("\n\n");
+
+      if (pages.length < (endPage - startPage + 1)) {
+        showToast(`Đang tóm tắt dựa trên ${pages.length} trang đã dịch trong khoảng từ ${startPage} đến ${endPage}.`, 'info');
+      }
+    } else if (type === 'document') {
+      // Collect all translated pages
+      const pages = Object.keys(translations).map(Number).sort((a, b) => a - b);
+      if (pages.length === 0) {
+        showToast("Chưa có nội dung nào được dịch để tóm tắt.", 'info');
+        return;
+      }
+      
+      contentToSummarize = pages
+        .map(p => `--- Trang ${p} ---\n${translations[p].content}`)
+        .join("\n\n");
+        
+      if (type === 'document' && pages.length < numPages) {
+        if (!window.confirm(`Bạn mới chỉ dịch ${pages.length}/${numPages} trang. Bạn có muốn tóm tắt dựa trên những trang đã dịch không?`)) {
+          return;
+        }
+      }
+    }
+
+    setTranslationPanelMode('summary');
+    setSummaryText('');
+    setIsSummarizing(true);
+    
+    if (summarySignalRef.current) {
+      summarySignalRef.current.abort();
+    }
+    summarySignalRef.current = new AbortController();
+    
+    try {
+      const g = (translationService.current as any).summarizeContent(
+        contentToSummarize, 
+        type, 
+        summarySignalRef.current.signal
+      );
+      
+      let fullSummary = "";
+      for await (const chunk of g) {
+        fullSummary += chunk;
+        setSummaryText(fullSummary);
+      }
+    } catch (error: any) {
+      if (error.message !== "Summarization aborted") {
+        console.error("Summarization error:", error);
+        showToast(`Lỗi tóm tắt: ${error.message}`, 'error');
+      }
+    } finally {
+      setIsSummarizing(false);
+      summarySignalRef.current = null;
     }
   };
 
@@ -3106,7 +3219,28 @@ export default function App() {
                         <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                    <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em]">Translation</span>
+                    <div className="flex items-center gap-1 p-1 bg-slate-100/50 rounded-lg border border-slate-200/50">
+                      <button 
+                        onClick={() => setTranslationPanelMode('translation')}
+                        className={cn(
+                          "flex items-center gap-1.5 px-2 py-1 rounded-md transition-all text-[10px] font-black uppercase tracking-tight",
+                          translationPanelMode === 'translation' ? "bg-white shadow-sm text-indigo-600" : "text-slate-400 hover:text-slate-600"
+                        )}
+                      >
+                        <Languages className="w-3 h-3" />
+                        <span>Dịch</span>
+                      </button>
+                      <button 
+                        onClick={() => setTranslationPanelMode('summary')}
+                        className={cn(
+                          "flex items-center gap-1.5 px-2 py-1 rounded-md transition-all text-[10px] font-black uppercase tracking-tight",
+                          translationPanelMode === 'summary' ? "bg-white shadow-sm text-indigo-600" : "text-slate-400 hover:text-slate-600"
+                        )}
+                      >
+                        <ScrollText className="w-3 h-3" />
+                        <span>Tóm tắt</span>
+                      </button>
+                    </div>
                     
                     {/* Mobile Navigation - Removed as redundant with floating bar */}
                     <div className="hidden md:flex items-center gap-0.5 bg-slate-50 rounded-lg px-1.5 py-0.5 border border-slate-100">
@@ -3194,10 +3328,9 @@ export default function App() {
                   </div>
                 </div>
                 
-                <div className="flex items-center gap-1.5 md:gap-3 min-w-max ml-0 md:ml-4">
+                <div className="flex items-center gap-1.5 md:gap-3 min-w-max ml-0 md:ml-4 flex-wrap pb-2 md:pb-0">
                   <button 
                     onClick={() => {
-                      // Pre-select current page if it's translated
                       if (translations[currentPage]?.status === 'success') {
                         setSelectedPagesToDownload([currentPage]);
                       } else {
@@ -3205,53 +3338,132 @@ export default function App() {
                       }
                       setShowDownloadModal(true);
                     }}
-                    className="flex items-center gap-1 px-2 md:px-3 py-1.5 rounded-lg text-[9px] md:text-[10px] font-black text-indigo-600 bg-indigo-50 hover:bg-indigo-100 uppercase tracking-tighter transition-all border border-indigo-100"
+                    className="flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-xl text-[9px] md:text-[10px] font-black text-indigo-600 bg-indigo-50 hover:bg-indigo-100 uppercase tracking-tighter transition-all border border-indigo-100 shadow-sm"
                   >
                     <Download className="w-3 h-3 md:w-3.5 md:h-3.5" /> 
-                    <span className="hidden xs:inline">Tải xuống</span>
-                    <span className="xs:hidden">Tải</span>
-                  </button>
-                  <button 
-                    onClick={() => translateCurrentPage(currentPage, true)}
-                    disabled={isTranslating || isRendering}
-                    className={cn(
-                      "px-2 md:px-4 py-1.5 rounded-lg text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1 md:gap-2 shadow-lg",
-                      (isTranslating || isRendering)
-                        ? "bg-slate-100 text-slate-400 cursor-not-allowed shadow-none" 
-                        : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-200 hover:shadow-indigo-300 active:scale-95"
-                    )}
-                  >
-                    {isTranslating || isRendering ? (
-                      <>
-                        <Loader2 className="w-3 h-3 md:w-3.5 md:h-3.5 animate-spin" />
-                        <span>{isRendering ? 'Vẽ...' : 'Dịch...'}</span>
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCcw className="w-3 h-3 md:w-3.5 md:h-3.5" />
-                        <span>{translations[currentPage] ? (window.innerWidth < 400 ? 'Dịch lại' : 'Dịch lại trang') : 'Dịch trang'}</span>
-                      </>
-                    )}
+                    <span>Tải tập tin</span>
                   </button>
 
-                  {translations[currentPage]?.content && (
+                  <div className="h-4 w-px bg-slate-200 hidden xs:block" />
+
+                  {translationPanelMode === 'translation' ? (
                     <button 
-                      onClick={() => handleCopyTranslation(translations[currentPage].content, currentPage)}
+                      onClick={() => translateCurrentPage(currentPage, true)}
+                      disabled={isTranslating || isRendering}
                       className={cn(
-                        "p-1.5 border rounded-lg transition-all flex items-center gap-1.5",
+                        "px-3 md:px-5 py-1.5 rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 md:gap-2 shadow-lg",
+                        (isTranslating || isRendering)
+                          ? "bg-slate-100 text-slate-400 cursor-not-allowed shadow-none" 
+                          : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-200 hover:shadow-indigo-300 active:scale-95"
+                      )}
+                    >
+                      {isTranslating || isRendering ? (
+                        <>
+                          <Loader2 className="w-3 h-3 md:w-3.5 md:h-3.5 animate-spin" />
+                          <span>{isRendering ? 'Vẽ...' : 'Dịch...'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCcw className="w-3 h-3 md:w-3.5 md:h-3.5" />
+                          <span>{translations[currentPage] ? 'Dịch lại' : 'Dịch trang'}</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1.5 bg-slate-100/50 p-1 rounded-2xl border border-slate-200/50">
+                      <button 
+                        onClick={() => handleSummarize('page')}
+                        disabled={isSummarizing}
+                        className={cn(
+                          "px-2 md:px-3 py-1.5 rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 md:gap-2",
+                          isSummarizing 
+                            ? "text-slate-400 opacity-50" 
+                            : "bg-white text-indigo-600 shadow-sm hover:bg-indigo-50"
+                        )}
+                        title="Tóm tắt trang hiện tại"
+                      >
+                        {isSummarizing ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <FileSearch className="w-3.5 h-3.5" />
+                        )}
+                        <span className="hidden sm:inline">Trang</span>
+                      </button>
+
+                      <div className="flex items-center gap-1 px-1 bg-white/60 rounded-lg border border-slate-200 shadow-inner group transition-all focus-within:ring-2 focus-within:ring-indigo-100">
+                        <input 
+                          type="number" 
+                          min={1} 
+                          max={numPages} 
+                          value={summaryRange.from} 
+                          onChange={(e) => setSummaryRange(prev => ({ ...prev, from: parseInt(e.target.value) || 1 }))}
+                          className="w-7 md:w-8 text-[10px] font-black bg-transparent border-none p-0 text-center text-slate-600 focus:ring-0"
+                          title="Trang bắt đầu"
+                        />
+                        <span className="text-[10px] font-black text-slate-400">→</span>
+                        <input 
+                          type="number" 
+                          min={1} 
+                          max={numPages} 
+                          value={summaryRange.to} 
+                          onChange={(e) => setSummaryRange(prev => ({ ...prev, to: parseInt(e.target.value) || 1 }))}
+                          className="w-7 md:w-8 text-[10px] font-black bg-transparent border-none p-0 text-center text-slate-600 focus:ring-0"
+                          title="Trang kết thúc"
+                        />
+                        <button 
+                          onClick={() => handleSummarize('chapter')}
+                          disabled={isSummarizing}
+                          className={cn(
+                            "ml-1 p-1.5 rounded-lg transition-all",
+                            isSummarizing 
+                              ? "text-slate-300" 
+                              : "text-indigo-600 hover:bg-indigo-50 active:scale-90"
+                          )}
+                          title="Tóm tắt khoảng tùy chọn"
+                        >
+                          <Layout className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      
+                      <button 
+                        onClick={() => handleSummarize('document')}
+                        disabled={isSummarizing}
+                        className={cn(
+                          "px-2 md:px-3 py-1.5 rounded-xl text-[9px] md:text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 md:gap-2",
+                          isSummarizing 
+                            ? "text-slate-400 opacity-50" 
+                            : "bg-white text-indigo-600 shadow-sm hover:bg-indigo-50"
+                        )}
+                        title="Tóm tắt toàn bộ tài liệu"
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Tài liệu</span>
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="h-4 w-px bg-slate-200 hidden xs:block" />
+
+                  {(translationPanelMode === 'translation' ? translations[currentPage]?.content : summaryText) && (
+                    <button 
+                      onClick={() => handleCopyTranslation(translationPanelMode === 'translation' ? translations[currentPage].content : summaryText, currentPage)}
+                      className={cn(
+                        "p-2 border rounded-xl transition-all flex items-center gap-1.5 shadow-sm",
                         copiedPage === currentPage 
                           ? "bg-emerald-50 border-emerald-200 text-emerald-600" 
-                          : "bg-slate-50 border-slate-100 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"
+                          : "bg-white border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 hover:bg-indigo-50/30"
                       )}
-                      title="Sao chép bản dịch"
                     >
                       {copiedPage === currentPage ? (
                         <>
                           <Check className="w-3.5 h-3.5" />
-                          <span className="text-[10px] font-bold">Đã chép!</span>
+                          <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider">Đã chép!</span>
                         </>
                       ) : (
-                        <Copy className="w-3.5 h-3.5" />
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider text-slate-400">Chép</span>
+                        </>
                       )}
                     </button>
                   )}
@@ -3260,8 +3472,46 @@ export default function App() {
               
               <div className="flex-1 overflow-auto p-6 md:p-12 bg-white">
                 <AnimatePresence mode="wait">
-                  {(!translations[currentPage] && (!activeTranslation || activeTranslation.page !== currentPage)) ? (
-                    (isRendering || isPdfLoading) ? (
+                  {translationPanelMode === 'summary' ? (
+                    <motion.div 
+                      key="summary-view"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="h-full flex flex-col"
+                    >
+                      {!summaryText && !isSummarizing ? (
+                        <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center">
+                          <ScrollText className="w-12 h-12 mb-4 opacity-20" />
+                          <p className="text-sm font-medium">Chưa có tóm tắt.</p>
+                          <p className="text-xs">Chọn chế độ tóm tắt để bắt đầu.</p>
+                        </div>
+                      ) : (
+                        <div 
+                          className="markdown-body select-text pb-24 md:pb-0"
+                          style={{ fontSize: `${fontSize}px` }}
+                        >
+                          {isSummarizing && !summaryText && (
+                            <div className="flex flex-col items-center justify-center py-20 gap-4">
+                              <Loader2 className="w-10 h-10 text-indigo-600 animate-spin" />
+                              <p className="text-xs font-bold text-slate-500 animate-pulse uppercase tracking-wider">Đang khởi tạo tóm tắt...</p>
+                            </div>
+                          )}
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {summaryText}
+                          </ReactMarkdown>
+                          {isSummarizing && summaryText && (
+                            <div className="mt-4 flex items-center gap-2 text-indigo-600 font-bold text-xs animate-pulse">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Đang tóm tắt nội dung...</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </motion.div>
+                  ) : (
+                    // Translation Mode Content
+                    (!translations[currentPage] && (!activeTranslation || activeTranslation.page !== currentPage)) ? (
+                      (isRendering || isPdfLoading) ? (
                       <motion.div 
                         key="rendering"
                         initial={{ opacity: 0 }}
@@ -3387,7 +3637,7 @@ export default function App() {
 
                       {/* Mobile Navigation Buttons - Removed as redundant with floating bar */}
                     </motion.div>
-                  )}
+                  ))}
                 </AnimatePresence>
               </div>
             </motion.div>

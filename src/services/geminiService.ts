@@ -518,4 +518,53 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
       throw new Error(`Lỗi OCR: ${error.message || "Không rõ nguyên nhân"}`);
     }
   }
+
+  async *summarizeContent(content: string, type: 'page' | 'document' | 'chapter', signal?: AbortSignal): AsyncGenerator<string> {
+    const ai = this.getAIInstance();
+    if (!ai) {
+      throw new Error("Không tìm thấy API Key.");
+    }
+
+    const typeLabels = {
+      page: "trang hiện tại",
+      document: "toàn bộ tài liệu",
+      chapter: "chương/phần này"
+    };
+
+    const systemInstruction = `Bạn là chuyên gia y khoa cao cấp. 
+Nhiệm vụ: Tóm tắt nội dung y khoa được cung cấp một cách ngắn gọn, súc tích và chính xác.
+Cấu trúc tóm tắt:
+1. Tổng quan (1-2 câu).
+2. Các điểm chính (danh sách dấu gạch đầu dòng).
+3. Kết luận/Lời khuyên (nếu có).
+Sử dụng Markdown đậm nhạt để làm nổi bật thuật ngữ quan trọng.
+Ngôn ngữ: Tiếng Việt y khoa chuẩn.`;
+
+    const prompt = `Hãy tóm tắt nội dung sau đây (${typeLabels[type]}):
+
+${content}`;
+
+    await this.waitForRateLimit();
+
+    try {
+      const response = await ai.models.generateContentStream({
+        model: this.modelName,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          systemInstruction: systemInstruction,
+          temperature: 0.2
+        }
+      });
+
+      for await (const chunk of response) {
+        if (signal?.aborted) throw new Error("Summarization aborted");
+        const chunkText = chunk.text;
+        if (chunkText) yield chunkText;
+      }
+    } catch (error: any) {
+      if (signal?.aborted) throw new Error("Summarization aborted");
+      console.error("Gemini Summarization Error:", error);
+      throw new Error(`Lỗi tóm tắt: ${error.message || "Không rõ nguyên nhân"}`);
+    }
+  }
 }
