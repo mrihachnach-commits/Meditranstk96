@@ -34,15 +34,16 @@ export class GeminiService implements TranslationService {
   private getAIInstance(): any {
     let key = "";
     
-    // 1. Try to find a non-exhausted manual key
+    // 1. Try to find a non-exhausted manual key using Round Robin
     if (this.apiKeys.length > 0) {
-      // Start from currentKeyIndex and look for a non-exhausted key
+      // Pick next key in sequence to balance load across all keys
       for (let i = 0; i < this.apiKeys.length; i++) {
-        const idx = (this.currentKeyIndex + i) % this.apiKeys.length;
+        const idx = (this.currentKeyIndex) % this.apiKeys.length;
+        this.currentKeyIndex++; // Increment for next time
+        
         const potentialKey = this.apiKeys[idx];
         if (!this.exhaustedKeys.has(potentialKey)) {
           key = potentialKey;
-          this.currentKeyIndex = idx;
           break;
         }
       }
@@ -58,7 +59,7 @@ export class GeminiService implements TranslationService {
       return null;
     }
     
-    // Cache the instance if the key hasn't changed
+    // Cache the instance if the key hasn't changed (saves re-init cost)
     if (this.aiInstance && this.lastKey === key) {
       return this.aiInstance;
     }

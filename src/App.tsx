@@ -3191,7 +3191,7 @@ export default function App() {
               </div>
               <div 
                 className={cn(
-                  "flex-1 overflow-auto pdf-container relative bg-slate-100 pb-24 md:pb-8",
+                  "flex-1 overflow-auto pdf-container relative bg-slate-100 pb-36 md:pb-8",
                   isFullScreen ? "p-0" : "p-4 md:p-8",
                   isPanning ? "cursor-grab select-none touch-none" : "cursor-auto"
                 )} 
@@ -3553,7 +3553,7 @@ export default function App() {
                         </div>
                       ) : (
                         <div 
-                          className="markdown-body select-text pb-24 md:pb-0"
+                          className="markdown-body select-text pb-40 md:pb-0"
                           style={{ fontSize: `${fontSize}px` }}
                         >
                           {isSummarizing && !summaryText && (
@@ -3634,41 +3634,53 @@ export default function App() {
                       className="h-full flex flex-col items-center justify-center gap-4 text-rose-500 bg-rose-50 rounded-2xl p-8"
                     >
                       <AlertCircle className="w-12 h-12" />
-                      <p className="text-sm font-bold text-center">{translations[currentPage].content}</p>
-                      <div className="flex flex-wrap justify-center gap-4">
+                      <p className="text-sm font-bold text-center leading-relaxed">
+                        {translations[currentPage].content}
+                      </p>
+                      
+                      {translations[currentPage].content?.includes('hết hạn mức') && (
+                        <div className="bg-white/50 p-3 rounded-xl border border-rose-200 mt-2 text-center">
+                          <p className="text-[11px] font-medium mb-2">Hệ thống gợi ý:</p>
+                          <p className="text-[10px] italic">Thêm nhiều Key trong Cài đặt để tự động luân phiên tránh lỗi này.</p>
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap justify-center gap-3">
                         <button 
                           onClick={() => setShowSettings(true)}
-                          className="px-4 py-2 bg-white border border-rose-200 rounded-xl text-xs font-bold hover:bg-rose-100 transition-colors"
+                          className="px-5 py-2.5 bg-rose-600 text-white rounded-2xl text-xs font-bold hover:bg-rose-700 transition-all shadow-lg shadow-rose-200 flex items-center gap-2"
                         >
-                          Cấu hình API Key
+                          <Settings className="w-3.5 h-3.5" />
+                          Cấu hình lại Key
                         </button>
-                        {(window as any).aistudio?.openSelectKey && (
-                          <button 
-                            onClick={async () => {
-                              if (translationService.current instanceof GeminiService) {
-                                await (translationService.current as any).openKeySelection();
-                                translateCurrentPage(currentPage, true);
-                              }
-                            }}
-                            className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200"
-                          >
-                            Chọn Key từ AI Studio
-                          </button>
-                        )}
                         <button 
                           onClick={() => translateCurrentPage(currentPage, true)}
-                          className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold hover:bg-slate-200 transition-colors"
+                          className="px-5 py-2.5 bg-white border border-rose-200 text-rose-600 rounded-2xl text-xs font-bold hover:bg-rose-100 transition-all"
                         >
                           Thử lại
                         </button>
                       </div>
+                      
+                      {(window as any).aistudio?.openSelectKey && (
+                        <button 
+                          onClick={async () => {
+                            if (translationService.current instanceof GeminiService) {
+                              await (translationService.current as any).openKeySelection();
+                              translateCurrentPage(currentPage, true);
+                            }
+                          }}
+                          className="mt-2 text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-700 underline underline-offset-4"
+                        >
+                          Chọn Key từ AI Studio
+                        </button>
+                      )}
                     </motion.div>
                   ) : (
                     <motion.div 
                       key="content"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="markdown-body select-text pb-24 md:pb-0"
+                      className="markdown-body select-text pb-40 md:pb-0"
                       onMouseUp={handleMouseUp}
                       style={{ 
                         fontSize: `${fontSize}px`,
@@ -4266,9 +4278,17 @@ export default function App() {
                 )}
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">
-                    API Key cho Gemini 3 Flash
-                  </label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">
+                      API Key cho Gemini 3 Flash
+                    </label>
+                    {currentKeyRef.current?.split(',').length! > 1 && (
+                      <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100 animate-pulse">
+                        <RefreshCcw className="w-2.5 h-2.5" />
+                        <span className="text-[8px] font-black uppercase tracking-tighter">Luân phiên: BẬT ({currentKeyRef.current?.split(',').length})</span>
+                      </div>
+                    )}
+                  </div>
                   <div className="flex gap-2 mt-3">
                     <div className="flex-1 relative">
                       <input 
@@ -4278,7 +4298,7 @@ export default function App() {
                           setTempKeys(prev => ({ ...prev, ['gemini-flash']: e.target.value }));
                           setTestStatus({ type: null, message: '' });
                         }}
-                        placeholder="Nhập API Key cho Gemini..."
+                        placeholder="Key 1, Key 2, Key 3..."
                         className="w-full pl-4 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-mono text-sm"
                       />
                       <button
@@ -4292,11 +4312,13 @@ export default function App() {
                     <button 
                       onClick={async () => {
                         if (!tempKeys['gemini-flash']) {
-                          setTestStatus({ type: 'error', message: "Vui lòng nhập API Key để kiểm tra." });
+                          setTestStatus({ type: 'error', message: "Vui lòng nhập ít nhất một API Key để kiểm tra." });
                           return;
                         }
                         setTestStatus({ type: 'loading', message: "Đang kiểm tra..." });
-                        const testService = new GeminiService(tempKeys['gemini-flash'], "gemini-3.1-flash-lite-preview");
+                        // Use first key if multiple provided for validation
+                        const firstKey = tempKeys['gemini-flash'].split(/[,\n]/)[0].trim();
+                        const testService = new GeminiService(firstKey, "gemini-3.1-flash-lite-preview");
                         try {
                           await testService.lookupMedicalTerm("test");
                           setTestStatus({ type: 'success', message: "Kết nối thành công! API Key hoạt động tốt." });
@@ -4330,7 +4352,7 @@ export default function App() {
                   
                   <div className="mt-2 p-3 bg-indigo-50 rounded-lg border border-indigo-100">
                     <p className="text-[10px] text-indigo-700 leading-relaxed">
-                      <span className="font-bold">Ghi chú:</span> Nếu để trống, ứng dụng sẽ sử dụng API Key mặc định từ hệ thống (nếu có).
+                      <span className="font-bold">Mẹo:</span> Bạn có thể nhập <span className="underline italic">nhiều Key cách nhau bằng dấu phẩy</span> để hệ thống tự động luân phiên (rotation) khi hết hạn mức.
                     </p>
                   </div>
 
