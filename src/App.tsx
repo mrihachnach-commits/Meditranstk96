@@ -2938,8 +2938,6 @@ export default function App() {
               <div className="h-11 bg-white border-b border-slate-200 flex items-center justify-between px-3 shrink-0 z-20 shadow-sm overflow-x-auto no-scrollbar">
                 <div className="flex items-center gap-3 min-w-max">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] font-black text-slate-300 uppercase tracking-[0.2em] hidden lg:block">Original</span>
-                    
                     {isLocalOnly && (
                       <button 
                         onClick={() => setShowFolderSelectModal(true)}
@@ -2994,55 +2992,19 @@ export default function App() {
 
                     {/* Mobile Navigation - Removed as redundant with floating bar */}
                     <div className="hidden md:flex items-center gap-0.5 bg-slate-50 rounded-lg px-1.5 py-0.5 border border-slate-100">
-                      <button 
-                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                        disabled={currentPage === 1}
-                        className="p-1 hover:bg-slate-200 rounded-md disabled:opacity-20 transition-colors"
-                      >
-                        <ChevronLeft className="w-3.5 h-3.5 text-slate-600" />
-                      </button>
-                      <span className="text-[10px] font-black text-slate-500 min-w-[30px] text-center">{currentPage}/{numPages}</span>
-                      <button 
-                        onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
-                        disabled={currentPage === numPages}
-                        className="p-1 hover:bg-slate-200 rounded-md disabled:opacity-20 transition-colors"
-                      >
-                        <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
-                      </button>
+                      {/* Navigation Logic Consolidated Below */}
                     </div>
                   </div>
 
-                  <div className="h-4 w-px bg-slate-200" />
+                  <div className="h-4 w-px bg-slate-200 hidden xs:block" />
 
-                  {totalJobs > 1 && (
-                    <div className="flex items-center gap-2 bg-slate-50 rounded-lg px-2 py-1 border border-slate-100 shadow-sm">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Phần</span>
-                      <div className="flex items-center gap-1">
-                        <select 
-                          value={currentJob}
-                          onChange={(e) => {
-                            const job = parseInt(e.target.value);
-                            setCurrentJob(job);
-                            setCurrentPage((job - 1) * PAGES_PER_JOB + 1);
-                          }}
-                          className="h-6 text-[11px] font-black border border-slate-200 rounded bg-white px-1.5 focus:ring-2 focus:ring-indigo-500 text-slate-700 appearance-none min-w-[32px] text-center"
-                        >
-                          {Array.from({ length: totalJobs }, (_, i) => i + 1).map(job => (
-                            <option key={job} value={job}>{job}</option>
-                          ))}
-                        </select>
-                        <span className="text-[10px] font-black text-slate-300">/ {totalJobs}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="hidden md:flex items-center gap-0.5">
+                  <div className="flex items-center gap-0.5">
                     <button 
                       onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                       disabled={currentPage === 1}
                       className="p-1 hover:bg-slate-100 rounded-md disabled:opacity-20 transition-colors"
                     >
-                      <ChevronLeft className="w-4 h-4 text-slate-600" />
+                      <ChevronLeft className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-600" />
                     </button>
                     <div className="flex items-center gap-1 px-1">
                       <input 
@@ -3056,16 +3018,16 @@ export default function App() {
                             setCurrentPage(val);
                           }
                         }}
-                        className="w-9 h-6 text-center text-[11px] font-bold border border-slate-200 rounded bg-slate-50 focus:bg-white focus:ring-1 focus:ring-indigo-500 transition-all"
+                        className="w-8 md:w-9 h-5 md:h-6 text-center text-[10px] md:text-[11px] font-bold border border-slate-200 rounded bg-slate-50 focus:bg-white focus:ring-1 focus:ring-indigo-500 transition-all px-0"
                       />
-                      <span className="text-[10px] font-bold text-slate-400">/ {numPages}</span>
+                      <span className="text-[9px] md:text-[10px] font-bold text-slate-400">/ {numPages}</span>
                     </div>
                     <button 
                       onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
                       disabled={currentPage === numPages}
                       className="p-1 hover:bg-slate-100 rounded-md disabled:opacity-20 transition-colors"
                     >
-                      <ChevronRight className="w-4 h-4 text-slate-600" />
+                      <ChevronRight className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-600" />
                     </button>
                   </div>
                 </div>
@@ -3239,25 +3201,6 @@ export default function App() {
                       >
                         <ScrollText className="w-3 h-3" />
                         <span>Tóm tắt</span>
-                      </button>
-                    </div>
-                    
-                    {/* Mobile Navigation - Removed as redundant with floating bar */}
-                    <div className="hidden md:flex items-center gap-0.5 bg-slate-50 rounded-lg px-1.5 py-0.5 border border-slate-100">
-                      <button 
-                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                        disabled={currentPage === 1}
-                        className="p-1 hover:bg-slate-200 rounded-md disabled:opacity-20 transition-colors"
-                      >
-                        <ChevronLeft className="w-3.5 h-3.5 text-slate-600" />
-                      </button>
-                      <span className="text-[10px] font-black text-slate-500 min-w-[30px] text-center">{currentPage}/{numPages}</span>
-                      <button 
-                        onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
-                        disabled={currentPage === numPages}
-                        className="p-1 hover:bg-slate-200 rounded-md disabled:opacity-20 transition-colors"
-                      >
-                        <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
                       </button>
                     </div>
                   </div>
