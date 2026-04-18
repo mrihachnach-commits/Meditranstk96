@@ -521,18 +521,24 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
   }
 
   async *summarizeContent(content: string, type: 'page' | 'document' | 'chapter', signal?: AbortSignal): AsyncGenerator<string> {
-    const ai = this.getAIInstance();
-    if (!ai) {
-      throw new Error("Không tìm thấy API Key.");
-    }
-
     const typeLabels = {
       page: "trang hiện tại",
       document: "toàn bộ tài liệu",
       chapter: "chương/phần này"
     };
 
-    const systemInstruction = `Bạn là một bác sĩ chuyên khoa cấp cao và nhà nghiên cứu y học uy tín.
+    const MAX_RETRIES = 5;
+    let retryCount = 0;
+
+    while (retryCount <= MAX_RETRIES) {
+      if (signal?.aborted) throw new Error("Summarization aborted");
+
+      const ai = this.getAIInstance();
+      if (!ai) {
+        throw new Error("Không tìm thấy API Key.");
+      }
+
+      const systemInstruction = `Bạn là một bác sĩ chuyên khoa cấp cao và nhà nghiên cứu y học uy tín.
 Nhiệm vụ: Phân tích và tóm tắt chi tiết nội dung y khoa để hỗ trợ cập nhật kiến thức chuyên môn cho nhân viên y tế.
 
 Yêu cầu bản tóm tắt phải CHI TIẾT, ĐẦY ĐỦ, CHUYÊN SÂU và bao quát các phương diện sau:
@@ -549,31 +555,55 @@ Phong cách trình bày:
 - Ngôn ngữ: Tiếng Việt y khoa chuyên sâu, trang trọng, chính xác tuyệt đối.
 - Nếu có dữ liệu so sánh, hãy trình bày dưới dạng bảng (Markdown Tables).`;
 
-    const prompt = `Hãy tóm tắt nội dung sau đây (${typeLabels[type]}):
+      const prompt = `Hãy tóm tắt nội dung sau đây (${typeLabels[type]}):
 
 ${content}`;
 
-    await this.waitForRateLimit();
+      await this.waitForRateLimit();
 
-    try {
-      const response = await ai.models.generateContentStream({
-        model: this.modelName,
-        contents: [{ parts: [{ text: prompt }] }],
-        config: {
-          systemInstruction: systemInstruction,
-          temperature: 0.2
+      try {
+        const response = await ai.models.generateContentStream({
+          model: this.modelName,
+          contents: [{ parts: [{ text: prompt }] }],
+          config: {
+            systemInstruction: systemInstruction,
+            temperature: 0.2
+          }
+        });
+
+        let hasData = false;
+        for await (const chunk of response) {
+          if (signal?.aborted) throw new Error("Summarization aborted");
+          const chunkText = chunk.text;
+          if (chunkText) {
+            hasData = true;
+            yield chunkText;
+          }
         }
-      });
 
-      for await (const chunk of response) {
+        if (hasData) break;
+        else throw new Error("No data returned from summary stream");
+
+      } catch (error: any) {
         if (signal?.aborted) throw new Error("Summarization aborted");
-        const chunkText = chunk.text;
-        if (chunkText) yield chunkText;
+        
+        const isQuotaError = error.message?.toLowerCase().includes("quota") || 
+                            error.message?.toLowerCase().includes("429") ||
+                            error.message?.toLowerCase().includes("resource_exhausted");
+        
+        if (isQuotaError && retryCount < MAX_RETRIES) {
+          const rotated = this.rotateKey();
+          if (rotated) {
+            console.log(`[MediTrans] Summary Quota exceeded. Rotated to a different API Key. Retrying...`);
+            retryCount++;
+            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+            continue;
+          }
+        }
+
+        console.error("Gemini Summarization Error:", error);
+        throw new Error(`Lỗi tóm tắt: ${error.message || "Không rõ nguyên nhân"}`);
       }
-    } catch (error: any) {
-      if (signal?.aborted) throw new Error("Summarization aborted");
-      console.error("Gemini Summarization Error:", error);
-      throw new Error(`Lỗi tóm tắt: ${error.message || "Không rõ nguyên nhân"}`);
     }
   }
 }

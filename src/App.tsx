@@ -3191,7 +3191,7 @@ export default function App() {
               </div>
               <div 
                 className={cn(
-                  "flex-1 overflow-auto pdf-container relative bg-slate-100 pb-36 md:pb-8",
+                  "flex-1 overflow-auto pdf-container relative bg-slate-100 pb-52 md:pb-8",
                   isFullScreen ? "p-0" : "p-4 md:p-8",
                   isPanning ? "cursor-grab select-none touch-none" : "cursor-auto"
                 )} 
@@ -3553,7 +3553,7 @@ export default function App() {
                         </div>
                       ) : (
                         <div 
-                          className="markdown-body select-text pb-40 md:pb-0"
+                          className="markdown-body select-text pb-60 md:pb-0"
                           style={{ fontSize: `${fontSize}px` }}
                         >
                           {isSummarizing && !summaryText && (
@@ -3680,7 +3680,7 @@ export default function App() {
                       key="content"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="markdown-body select-text pb-40 md:pb-0"
+                      className="markdown-body select-text pb-60 md:pb-0"
                       onMouseUp={handleMouseUp}
                       style={{ 
                         fontSize: `${fontSize}px`,
@@ -4519,23 +4519,6 @@ export default function App() {
                       </div>
                     </div>
                   )}
-                </div>
-                
-                <div className="pt-6 border-t border-slate-100">
-                  <h3 className="text-sm font-bold text-slate-800 mb-2 flex items-center gap-2">
-                    <Trash2 className="w-4 h-4 text-rose-500" />
-                    Quản lý dữ liệu
-                  </h3>
-                  <p className="text-[10px] text-slate-500 mb-3">
-                    Xóa tất cả các bản dịch đã lưu trong phiên làm việc hiện tại.
-                  </p>
-                  <button 
-                    onClick={clearAllTranslations}
-                    className="w-full py-2 bg-rose-50 text-rose-600 rounded-xl text-xs font-bold hover:bg-rose-100 transition-all border border-rose-100 flex items-center justify-center gap-2"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    Xóa tất cả bản dịch
-                  </button>
                 </div>
               </div>
               
