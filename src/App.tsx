@@ -62,6 +62,7 @@ import {
   Mail,
   Eye,
   EyeOff,
+  Save,
   ScrollText,
   FileSearch,
   BookOpen
@@ -244,6 +245,7 @@ export default function App() {
   const [translationPanelMode, setTranslationPanelMode] = useState<'translation' | 'summary'>('translation');
   const [summaryText, setSummaryText] = useState<string>('');
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [isSavingSummary, setIsSavingSummary] = useState(false);
   const [summaryRange, setSummaryRange] = useState<{from: number, to: number}>({from: 1, to: 1});
   const summarySignalRef = useRef<AbortController | null>(null);
 
@@ -1380,6 +1382,99 @@ export default function App() {
     } finally {
       setIsSummarizing(false);
       summarySignalRef.current = null;
+    }
+  };
+
+  const handleSaveSummary = async () => {
+    if (!summaryText || isSummarizing) return;
+    if (!fileId || isLocalOnly) {
+      showToast("Vui lòng tải tệp lên đám mây để lưu tóm tắt.", 'info');
+      return;
+    }
+
+    const userId = auth.currentUser?.uid;
+    if (!userId) {
+      showToast("Vui lòng đăng nhập để lưu tóm tắt.", 'error');
+      return;
+    }
+
+    setIsSavingSummary(true);
+    try {
+      const summaryId = `summary_${Date.now()}`;
+      await setDoc(doc(db, `users/${userId}/documents/${fileId}/summaries`, summaryId), {
+        content: summaryText,
+        type: summaryRange.from === summaryRange.to ? 'page' : 'chapter', // approximation
+        range: `${summaryRange.from}-${summaryRange.to}`,
+        createdAt: serverTimestamp()
+      });
+      showToast("Đã lưu tóm tắt thành công", 'success');
+    } catch (error: any) {
+      console.error("Lỗi khi lưu tóm tắt:", error);
+      handleFirestoreError(error, OperationType.CREATE, `users/${userId}/documents/${fileId}/summaries`);
+    } finally {
+      setIsSavingSummary(false);
+    }
+  };
+
+  const handleDownloadSummary = async () => {
+    if (!summaryText) return;
+    
+    try {
+      showToast("Đang chuẩn bị tệp Word...", 'info');
+      
+      const fileNameWithoutExt = (currentFileName || 'document').replace(/\.[^/.]+$/, "");
+      
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: [
+            new Paragraph({
+              text: `TÓM TẮT TÀI LIỆU`,
+              heading: HeadingLevel.HEADING_1,
+              spacing: { after: 400 }
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: `Tên tài liệu: ${currentFileName || 'Không rõ'}`,
+                  bold: true
+                })
+              ],
+              spacing: { after: 200 }
+            }),
+            new Paragraph({
+              text: `Ngày tạo: ${new Date().toLocaleString('vi-VN')}`,
+              spacing: { after: 400 }
+            }),
+            ...summaryText.split('\n').map(line => {
+              const trimmed = line.trim();
+              if (!trimmed) return new Paragraph({ text: "" });
+
+              const isHeading = trimmed.startsWith('#');
+              const level = trimmed.match(/^#+/)?.[0].length || 0;
+              const cleanText = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
+
+              return new Paragraph({
+                heading: isHeading ? (level === 1 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2) : undefined,
+                spacing: { before: isHeading ? 200 : 100, after: 100 },
+                children: [
+                   new TextRun({
+                     text: cleanText,
+                     bold: trimmed.includes('**') || isHeading
+                   })
+                ]
+              });
+            })
+          ],
+        }],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      saveAs(blob, `TomTat_${fileNameWithoutExt}.docx`);
+      showToast("Đã bắt đầu tải xuống tóm tắt (.docx)", 'success');
+    } catch (error) {
+      console.error("Lỗi khi tải xuống tóm tắt Word:", error);
+      showToast("Không thể tải xuống tóm tắt dạng Word", 'error');
     }
   };
 
@@ -3238,37 +3333,6 @@ export default function App() {
                   </button>
 
                   <div className="h-4 w-px bg-slate-200" />
-                  
-                  <div className="flex items-center gap-1.5 bg-slate-50 rounded-md p-0.5 border border-slate-100">
-                    <div className="flex items-center gap-1 px-1">
-                      <FontIcon className="w-3 h-3 text-slate-400" />
-                      <select 
-                        value={fontFamily}
-                        onChange={(e) => setFontFamily(e.target.value)}
-                        className="text-[10px] font-bold bg-transparent border-none focus:ring-0 cursor-pointer text-slate-600 px-0"
-                      >
-                        <option value="Inter">Sans</option>
-                        <option value="Cormorant Garamond">Serif</option>
-                        <option value="Playfair Display">Display</option>
-                        <option value="JetBrains Mono">Mono</option>
-                      </select>
-                    </div>
-                    
-                    <div className="w-px h-3 bg-slate-200 mx-0.5" />
-                    
-                    <div className="flex items-center gap-1 px-1">
-                      <ALargeSmall className="w-3 h-3 text-slate-400" />
-                      <select 
-                        value={fontSize}
-                        onChange={(e) => setFontSize(Number(e.target.value))}
-                        className="text-[10px] font-bold bg-transparent border-none focus:ring-0 cursor-pointer text-slate-600 px-0"
-                      >
-                        {[12, 14, 16, 18, 20].map(size => (
-                          <option key={size} value={size}>{size}px</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
                 </div>
                 
                 <div className="flex items-center gap-1.5 md:gap-3 min-w-max ml-0 md:ml-4 flex-wrap pb-2 md:pb-0">
@@ -3388,28 +3452,87 @@ export default function App() {
                   <div className="h-4 w-px bg-slate-200 hidden xs:block" />
 
                   {(translationPanelMode === 'translation' ? translations[currentPage]?.content : summaryText) && (
-                    <button 
-                      onClick={() => handleCopyTranslation(translationPanelMode === 'translation' ? translations[currentPage].content : summaryText, currentPage)}
-                      className={cn(
-                        "p-2 border rounded-xl transition-all flex items-center gap-1.5 shadow-sm",
-                        copiedPage === currentPage 
-                          ? "bg-emerald-50 border-emerald-200 text-emerald-600" 
-                          : "bg-white border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 hover:bg-indigo-50/30"
-                      )}
-                    >
-                      {copiedPage === currentPage ? (
+                    <div className="flex items-center gap-1.5">
+                      <button 
+                        onClick={() => handleCopyTranslation(translationPanelMode === 'translation' ? translations[currentPage].content : summaryText, currentPage)}
+                        className={cn(
+                          "p-2 border rounded-xl transition-all flex items-center gap-1.5 shadow-sm",
+                          copiedPage === currentPage 
+                            ? "bg-emerald-50 border-emerald-200 text-emerald-600" 
+                            : "bg-white border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 hover:bg-indigo-50/30"
+                        )}
+                        title="Sao chép"
+                      >
+                        {copiedPage === currentPage ? (
+                          <>
+                            <Check className="w-3.5 h-3.5" />
+                            <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider">Đã chép!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider text-slate-400">Chép</span>
+                          </>
+                        )}
+                      </button>
+
+                      {translationPanelMode === 'summary' && summaryText && (
                         <>
-                          <Check className="w-3.5 h-3.5" />
-                          <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider">Đã chép!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider text-slate-400">Chép</span>
+                          <button 
+                            onClick={handleSaveSummary}
+                            disabled={isSavingSummary || isSummarizing}
+                            className="p-2 border border-slate-200 rounded-xl bg-white text-slate-400 hover:text-indigo-600 hover:border-indigo-100 hover:bg-indigo-50/30 transition-all flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                            title="Lưu tóm tắt vào đám mây"
+                          >
+                            {isSavingSummary ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                            <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider">Lưu</span>
+                          </button>
+                          <button 
+                            onClick={handleDownloadSummary}
+                            className="p-2 border border-slate-200 rounded-xl bg-white text-slate-400 hover:text-indigo-600 hover:border-indigo-100 hover:bg-indigo-50/30 transition-all flex items-center gap-1.5 shadow-sm"
+                            title="Tải xuống tóm tắt"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span className="hidden xs:inline text-[9px] font-black uppercase tracking-wider text-slate-400">Tải</span>
+                          </button>
                         </>
                       )}
-                    </button>
+                    </div>
                   )}
+
+                  <div className="h-4 w-px bg-slate-200 hidden md:block" />
+
+                  {/* Font Controls at the end */}
+                  <div className="flex items-center gap-1.5 bg-slate-50 rounded-md p-0.5 border border-slate-100">
+                    <div className="flex items-center gap-1 px-1">
+                      <FontIcon className="w-3 h-3 text-slate-400" />
+                      <select 
+                        value={fontFamily}
+                        onChange={(e) => setFontFamily(e.target.value)}
+                        className="text-[10px] font-bold bg-transparent border-none focus:ring-0 cursor-pointer text-slate-600 px-0"
+                      >
+                        <option value="Inter">Sans</option>
+                        <option value="Cormorant Garamond">Serif</option>
+                        <option value="Playfair Display">Display</option>
+                        <option value="JetBrains Mono">Mono</option>
+                      </select>
+                    </div>
+                    
+                    <div className="w-px h-3 bg-slate-200 mx-0.5" />
+                    
+                    <div className="flex items-center gap-1 px-1">
+                      <ALargeSmall className="w-3 h-3 text-slate-400" />
+                      <select 
+                        value={fontSize}
+                        onChange={(e) => setFontSize(Number(e.target.value))}
+                        className="text-[10px] font-bold bg-transparent border-none focus:ring-0 cursor-pointer text-slate-600 px-0"
+                      >
+                        {[12, 14, 16, 18, 20].map(size => (
+                          <option key={size} value={size}>{size}px</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
               </div>
               

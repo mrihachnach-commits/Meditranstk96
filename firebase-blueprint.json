@@ -78,6 +78,18 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "When the email was blacklisted." }
       },
       "required": ["email"]
+    },
+    "Summary": {
+      "title": "Summary",
+      "description": "Stored summary for a document or specific range.",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string", "description": "The summarized text content." },
+        "type": { "type": "string", "enum": ["page", "chapter", "document"], "description": "The type of summary." },
+        "range": { "type": "string", "description": "Optional range information (e.g., '1-5')." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the summary was created." }
+      },
+      "required": ["content", "type", "createdAt"]
     }
   },
   "firestore": {
@@ -100,6 +112,10 @@
     "/users/{userId}/documents/{docId}/pages/{pageNum}": {
       "schema": "Translation",
       "description": "Collection of translations for a specific document and page."
+    },
+    "/users/{userId}/documents/{docId}/summaries/{summaryId}": {
+      "schema": "Summary",
+      "description": "Collection of summaries for a document."
     },
     "/apiKeys/{keyId}": {
       "schema": "ApiKey",

@@ -121,6 +121,14 @@ service cloud.firestore {
              (data.updatedAt == null || data.updatedAt is timestamp);
     }
 
+    function isValidSummary(data) {
+      return hasOnlyAllowedFields(['content', 'type', 'range', 'createdAt']) &&
+             data.content is string && data.content.size() < 1000000 &&
+             data.type in ['page', 'chapter', 'document'] &&
+             (data.range == null || data.range is string) &&
+             data.createdAt is timestamp;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -160,6 +168,11 @@ service cloud.firestore {
       match /pages/{pageNum} {
         allow read: if isOwner(userId) || isAdmin();
         allow write: if (isOwner(userId) || isAdmin()) && isValidTranslation(request.resource.data);
+      }
+
+      match /summaries/{summaryId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if (isOwner(userId) || isAdmin()) && isValidSummary(request.resource.data);
       }
     }
   }
