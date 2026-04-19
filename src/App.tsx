@@ -1665,6 +1665,8 @@ export default function App() {
   const renderPage = useCallback(async (pageNum: number) => {
     if (!pdfDoc || !canvasRef.current || !textLayerRef.current) return;
 
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
     // Bounds check to prevent "Invalid page request"
     if (pageNum < 1 || pageNum > pdfDoc.numPages) {
       console.warn(`[MediTrans AI] Invalid page request: ${pageNum}. Document has ${pdfDoc.numPages} pages.`);
@@ -1676,19 +1678,18 @@ export default function App() {
     setIsRendering(true);
     isRenderingRef.current = true;
 
-    // Ensure previous render task is cancelled AND finished before starting a new one
-    // This prevents "Cannot use the same canvas during multiple render() operations"
+    // Ensure previous render task is cancelled
     if (renderTaskRef.current) {
       renderTaskRef.current.cancel();
-      try {
-        // Wait for the previous task to actually stop
-        await renderTaskRef.current.promise;
-      } catch (e) {
-        // Ignore cancellation errors
-      }
+      renderTaskRef.current = null;
     }
 
-    // Check if a newer request has come in while we were waiting for cancellation
+    // Give a tiny gap for the main thread to breathe during rapid navigation
+    if (isMobile) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    // Check if a newer request has come in while we were waiting
     if (requestId !== renderRequestIdRef.current) {
       return;
     }
@@ -1724,41 +1725,8 @@ export default function App() {
         await renderTask.promise;
         
         // Small delay for mobile browsers to ensure canvas buffer is flushed before capture
-        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         if (isMobile) {
           await new Promise(resolve => setTimeout(resolve, 150));
-        }
-
-        // Instant Capture for Translation - Prepare image buffer immediately after render
-        if (requestId === renderRequestIdRef.current) {
-          const MAX_DIMENSION = 1024;
-          let captureCanvas = canvas;
-          
-          if (canvas.width > MAX_DIMENSION || canvas.height > MAX_DIMENSION) {
-            const tempCanvas = document.createElement('canvas');
-            const ratio = Math.min(MAX_DIMENSION / canvas.width, MAX_DIMENSION / canvas.height);
-            tempCanvas.width = canvas.width * ratio;
-            tempCanvas.height = canvas.height * ratio;
-            const tempCtx = tempCanvas.getContext('2d');
-            if (tempCtx) {
-              tempCtx.drawImage(canvas, 0, 0, tempCanvas.width, tempCanvas.height);
-              captureCanvas = tempCanvas;
-            }
-          }
-          
-          const buffer = captureCanvas.toDataURL('image/jpeg', 0.65);
-          
-          // Safety check: data:, or very short string means capture failed
-          if (buffer.length > 1000) {
-            lastRenderedImageRef.current = {
-              page: pageNum,
-              zoom,
-              buffer: buffer
-            };
-          } else {
-            console.warn(`[MediTrans] Capture failed or returned empty buffer for page ${pageNum}`);
-            lastRenderedImageRef.current = null;
-          }
         }
 
         // Only update state if this is still the current request
@@ -1768,32 +1736,60 @@ export default function App() {
           isRenderingRef.current = false;
           renderTaskRef.current = null;
           
-          // Render text layer in the background
-          const textContent = await page.getTextContent();
-          const textLayerDiv = textLayerRef.current;
-          if (textLayerDiv) {
-            textLayerDiv.innerHTML = '';
-            
-            // Use the same scale as the visual representation
-            const textViewport = page.getViewport({ scale: zoom });
-            textLayerDiv.style.width = `${textViewport.width}px`;
-            textLayerDiv.style.height = `${textViewport.height}px`;
-            textLayerDiv.style.left = '0';
-            textLayerDiv.style.top = '0';
-            // Required for PDF.js 3.x text layer rendering
-            textLayerDiv.style.setProperty('--scale-factor', textViewport.scale.toString());
-            
-            await (pdfjs as any).renderTextLayer({
-              textContentSource: textContent,
-              container: textLayerDiv,
-              viewport: textViewport,
-              textDivs: []
-            }).promise;
-          }
-        }
+          // LAZY OPERATIONS: Capture image and Text layer slightly after visual render
+          // This prevents the UI from "freezing" between page turns
+          setTimeout(async () => {
+             if (requestId !== renderRequestIdRef.current) return;
 
-        // Crucial for memory: cleanup page resources
-        page.cleanup();
+             try {
+               // 1. Capture for Translation
+               const MAX_DIMENSION = 1024;
+               let captureCanvas = canvas;
+               
+               if (canvas.width > MAX_DIMENSION || canvas.height > MAX_DIMENSION) {
+                 const tempCanvas = document.createElement('canvas');
+                 const ratio = Math.min(MAX_DIMENSION / canvas.width, MAX_DIMENSION / canvas.height);
+                 tempCanvas.width = canvas.width * ratio;
+                 tempCanvas.height = canvas.height * ratio;
+                 const tempCtx = tempCanvas.getContext('2d');
+                 if (tempCtx) {
+                   tempCtx.drawImage(canvas, 0, 0, tempCanvas.width, tempCanvas.height);
+                   captureCanvas = tempCanvas;
+                 }
+               }
+               
+               const buffer = captureCanvas.toDataURL('image/jpeg', 0.65);
+               if (buffer.length > 1000) {
+                 lastRenderedImageRef.current = { page: pageNum, zoom, buffer };
+               }
+
+               // 2. Render Text Layer
+               const textContent = await page.getTextContent();
+               const textLayerDiv = textLayerRef.current;
+               if (textLayerDiv && requestId === renderRequestIdRef.current) {
+                 textLayerDiv.innerHTML = '';
+                 const textViewport = page.getViewport({ scale: zoom });
+                 textLayerDiv.style.width = `${textViewport.width}px`;
+                 textLayerDiv.style.height = `${textViewport.height}px`;
+                 textLayerDiv.style.left = '0';
+                 textLayerDiv.style.top = '0';
+                 textLayerDiv.style.setProperty('--scale-factor', textViewport.scale.toString());
+                 
+                 await (pdfjs as any).renderTextLayer({
+                   textContentSource: textContent,
+                   container: textLayerDiv,
+                   viewport: textViewport,
+                   textDivs: []
+                 }).promise;
+               }
+             } catch (err) {
+               console.warn("[MediTrans] Lazy post-render failed:", err);
+             } finally {
+               // Crucial for memory: cleanup page resources
+               page.cleanup();
+             }
+          }, 150);
+        }
       }
     } catch (error: any) {
       if (error.name !== 'RenderingCancelledException') {
