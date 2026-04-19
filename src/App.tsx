@@ -516,6 +516,10 @@ export default function App() {
   const [fontSize, setFontSize] = useState(14);
   const [fontFamily, setFontFamily] = useState('Inter');
   
+  // PDF Rendering Cache to prevent re-loading same pages during navigation
+  const pageCacheRef = useRef<Map<number, { canvas: HTMLCanvasElement, zoom: number, textContent: any }>>(new Map());
+  const CACHE_SIZE_LIMIT = 8; // Keep last 8 pages in memory for instant switching
+
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [userRole, setUserRole] = useState<'admin' | 'user' | null>(null);
@@ -1518,6 +1522,7 @@ export default function App() {
     preTranslateControllersRef.current.forEach(controller => controller.abort());
     preTranslateControllersRef.current.clear();
     translatingPagesRef.current.clear();
+    pageCacheRef.current.clear();
 
     setFile(null); // We don't have a local File object
     setTranslations({});
@@ -1608,6 +1613,7 @@ export default function App() {
       preTranslateControllersRef.current.forEach(controller => controller.abort());
       preTranslateControllersRef.current.clear();
       translatingPagesRef.current.clear();
+      pageCacheRef.current.clear();
 
       setFile(selectedFile);
       setTranslations({});
@@ -1674,6 +1680,44 @@ export default function App() {
     }
 
     const requestId = ++renderRequestIdRef.current;
+
+    // 1. Instant Cache Check - If we have this page rendered at this zoom, show it immediately!
+    const cached = pageCacheRef.current.get(pageNum);
+    if (cached && Math.abs(cached.zoom - zoom) < 0.01) {
+      console.log(`[MediTrans] Instant Cache Hit for page ${pageNum}`);
+      const canvas = canvasRef.current;
+      const context = canvas.getContext('2d', { alpha: false });
+      if (context) {
+        canvas.width = cached.canvas.width;
+        canvas.height = cached.canvas.height;
+        canvas.style.width = cached.canvas.style.width;
+        canvas.style.height = cached.canvas.style.height;
+        context.drawImage(cached.canvas, 0, 0);
+        
+        // Restore text layer if available
+        if (cached.textContent && textLayerRef.current) {
+          const textLayerDiv = textLayerRef.current;
+          textLayerDiv.innerHTML = '';
+          const page = await pdfDoc.getPage(pageNum);
+          const textViewport = page.getViewport({ scale: zoom });
+          textLayerDiv.style.width = `${textViewport.width}px`;
+          textLayerDiv.style.height = `${textViewport.height}px`;
+          textLayerDiv.style.setProperty('--scale-factor', textViewport.scale.toString());
+          
+          await (pdfjs as any).renderTextLayer({
+            textContentSource: cached.textContent,
+            container: textLayerDiv,
+            viewport: textViewport,
+            textDivs: []
+          }).promise;
+          page.cleanup();
+        }
+        
+        setIsRendering(false);
+        isRenderingRef.current = false;
+        return;
+      }
+    }
 
     setIsRendering(true);
     isRenderingRef.current = true;
@@ -1765,6 +1809,37 @@ export default function App() {
 
                // 2. Render Text Layer
                const textContent = await page.getTextContent();
+               
+               // Cache this result for next time
+               if (requestId === renderRequestIdRef.current) {
+                 const cacheCanvas = document.createElement('canvas');
+                 cacheCanvas.width = canvas.width;
+                 cacheCanvas.height = canvas.height;
+                 cacheCanvas.style.width = canvas.style.width;
+                 cacheCanvas.style.height = canvas.style.height;
+                 const cacheCtx = cacheCanvas.getContext('2d');
+                 if (cacheCtx) cacheCtx.drawImage(canvas, 0, 0);
+                 
+                 pageCacheRef.current.set(pageNum, { 
+                   canvas: cacheCanvas, 
+                   zoom, 
+                   textContent 
+                 });
+
+                 // LRU: Evict oldest if limit reached
+                 if (pageCacheRef.current.size > CACHE_SIZE_LIMIT) {
+                   const oldestKey = pageCacheRef.current.keys().next().value;
+                   if (oldestKey !== undefined) {
+                     const old = pageCacheRef.current.get(oldestKey);
+                     if (old?.canvas) {
+                       old.canvas.width = 0;
+                       old.canvas.height = 0;
+                     }
+                     pageCacheRef.current.delete(oldestKey);
+                   }
+                 }
+               }
+
                const textLayerDiv = textLayerRef.current;
                if (textLayerDiv && requestId === renderRequestIdRef.current) {
                  textLayerDiv.innerHTML = '';
@@ -2096,6 +2171,7 @@ export default function App() {
       const page = await pdfDoc.getPage(pageNum);
       if (signal?.aborted) {
         page.cleanup();
+        translatingPagesRef.current.delete(pageNum);
         return;
       }
 
@@ -2113,18 +2189,29 @@ export default function App() {
           viewport: viewport,
         } as any);
         
+        const abortHandler = () => renderTask.cancel();
         if (signal) {
-          signal.addEventListener('abort', () => renderTask.cancel());
+          signal.addEventListener('abort', abortHandler);
         }
 
-        await renderTask.promise;
+        try {
+          await renderTask.promise;
+        } finally {
+          if (signal) signal.removeEventListener('abort', abortHandler);
+        }
         
         if (signal?.aborted) {
           page.cleanup();
+          translatingPagesRef.current.delete(pageNum);
           return;
         }
 
         const imageBuffer = canvas.toDataURL('image/jpeg', 0.8);
+        
+        // Final cleanup for pre-render canvas before AI call
+        canvas.width = 0;
+        canvas.height = 0;
+
         const stream = translationService.current.translateMedicalPageStream({
           imageBuffer,
           pageNumber: pageNum,
@@ -2175,7 +2262,11 @@ export default function App() {
         const finalResult = { content: fullContent, status: 'success' as const };
         
         if (fileIdRef.current === currentFileId) {
-          setTranslations(prev => ({ ...prev, [pageNum]: finalResult }));
+          setTranslations(prev => {
+             const updated = { ...prev, [pageNum]: finalResult };
+             translationsRef.current = updated;
+             return updated;
+          });
           
           // Sync to Firestore if user is logged in
           if (user && fileId) {
@@ -2212,11 +2303,14 @@ export default function App() {
         setIsTranslating(false);
       }
     }
-  }, [pdfDoc, numPages, translationService]);
+  }, [pdfDoc, numPages, user, fileId, translationService]);
 
   useEffect(() => {
     if (pdfDoc && autoTranslate && !isTranslating) {
-      // Look ahead based on setting
+      // Look ahead based on setting, but limit to 1 concurrent pre-translation
+      // to avoid clogging the quota for the user's focus page
+      if (translatingPagesRef.current.size >= 1) return;
+
       const pagesToBuffer = [];
       for (let i = 1; i <= autoTranslateLookAhead; i++) {
         pagesToBuffer.push(currentPage + i);
@@ -2224,27 +2318,31 @@ export default function App() {
       
       const controllers: AbortController[] = [];
       
-      for (const pageNum of pagesToBuffer) {
-        if (pageNum <= numPages && !translations[pageNum] && !translatingPagesRef.current.has(pageNum)) {
-          const controller = new AbortController();
-          controllers.push(controller);
-          preTranslateControllersRef.current.set(pageNum, controller);
-          
-          const timer = setTimeout(() => {
-            preTranslatePage(pageNum, controller.signal).finally(() => {
-              preTranslateControllersRef.current.delete(pageNum);
-            });
-          }, 500);
-          
-          // Note: we don't return here, we want to start all timers
-        }
-      }
+      // Find the first page that needs translation
+      const nextPageToTranslate = pagesToBuffer.find(pageNum => 
+        pageNum <= numPages && 
+        !translationsRef.current[pageNum] && 
+        !translatingPagesRef.current.has(pageNum)
+      );
 
-      return () => {
-        controllers.forEach(c => c.abort());
-      };
+      if (nextPageToTranslate) {
+        const controller = new AbortController();
+        controllers.push(controller);
+        preTranslateControllersRef.current.set(nextPageToTranslate, controller);
+        
+        const timer = setTimeout(() => {
+          preTranslatePage(nextPageToTranslate, controller.signal).finally(() => {
+            preTranslateControllersRef.current.delete(nextPageToTranslate);
+          });
+        }, 1000); // 1s delay to prioritize UI stability
+        
+        return () => {
+          clearTimeout(timer);
+          controller.abort();
+        };
+      }
     }
-  }, [currentPage, pdfDoc, autoTranslate, translations, numPages, preTranslatePage, isTranslating, autoTranslateLookAhead]);
+  }, [currentPage, pdfDoc, autoTranslate, numPages, preTranslatePage, isTranslating, autoTranslateLookAhead]);
 
   useEffect(() => {
     if (user && fileId) {
@@ -2394,8 +2492,56 @@ export default function App() {
   useEffect(() => {
     if (pdfDoc) {
       renderPage(currentPage);
+      
+      // Predictive Background Rendering - Render next page in advance
+      const nextP = currentPage + 1;
+      if (nextP <= numPages && !pageCacheRef.current.has(nextP)) {
+        const timer = setTimeout(async () => {
+          try {
+            const page = await pdfDoc.getPage(nextP);
+            const renderScale = zoom * 2;
+            const viewport = page.getViewport({ scale: renderScale });
+            
+            const cacheCanvas = document.createElement('canvas');
+            cacheCanvas.width = viewport.width;
+            cacheCanvas.height = viewport.height;
+            cacheCanvas.style.width = `${viewport.width / (renderScale / zoom)}px`;
+            cacheCanvas.style.height = `${viewport.height / (renderScale / zoom)}px`;
+            
+            const ctx = cacheCanvas.getContext('2d', { alpha: false });
+            if (ctx) {
+              await page.render({ canvasContext: ctx, viewport }).promise;
+              const textContent = await page.getTextContent();
+              
+              pageCacheRef.current.set(nextP, { 
+                canvas: cacheCanvas, 
+                zoom, 
+                textContent 
+              });
+              
+              console.log(`[MediTrans] Prefetched page ${nextP}`);
+              
+              if (pageCacheRef.current.size > CACHE_SIZE_LIMIT) {
+                const oldestKey = pageCacheRef.current.keys().next().value;
+                if (oldestKey !== undefined) {
+                  const old = pageCacheRef.current.get(oldestKey);
+                  if (old?.canvas) {
+                    old.canvas.width = 0;
+                    old.canvas.height = 0;
+                  }
+                  pageCacheRef.current.delete(oldestKey);
+                }
+              }
+            }
+            page.cleanup();
+          } catch (e) {
+            console.warn("Predictive render failed:", e);
+          }
+        }, 3000); // Wait 3s after current page render to do background work
+        return () => clearTimeout(timer);
+      }
     }
-  }, [pdfDoc, currentPage, renderPage]);
+  }, [pdfDoc, currentPage, renderPage, numPages, zoom]);
 
   const handleKeyDownRef = useRef<(e: KeyboardEvent) => void>(null);
   

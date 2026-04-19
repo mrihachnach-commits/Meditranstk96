@@ -10,7 +10,6 @@ export class GeminiService implements TranslationService {
   private lastUsed: Map<string, number> = new Map();
   private systemKey: string | null = null;
   private static lastRequestTime: number = 0;
-  private static MIN_REQUEST_INTERVAL: number = 1000; // Increased speed slightly
 
   constructor(apiKeys?: string | string[], modelName: string = "gemini-flash-latest") {
     this.modelName = modelName;
@@ -31,6 +30,15 @@ export class GeminiService implements TranslationService {
     }
 
     console.log(`[MediTrans] GeminiService initialized with ${this.apiKeys.length} manual keys and ${this.systemKey ? '1' : '0'} system key. Model: ${modelName}`);
+  }
+
+  private getMIN_REQUEST_INTERVAL(): number {
+    const totalKeys = this.apiKeys.length + (this.systemKey ? 1 : 0);
+    // Each key has a ~15 RPM limit on Gemini Flash (1 request per 4s)
+    // To be safe and distribute load, we can lower the interval as we add keys
+    if (totalKeys > 4) return 500; // max 120 RPM
+    if (totalKeys > 1) return 800; // max 75 RPM
+    return 1500; // Default fallback for single key (40 RPM, still higher than 15 but handles bursts)
   }
 
   private getAIInstance(): any {
@@ -71,22 +79,28 @@ export class GeminiService implements TranslationService {
   private async waitForRateLimit(): Promise<void> {
     const now = Date.now();
     const timeSinceLastRequest = now - GeminiService.lastRequestTime;
-    if (timeSinceLastRequest < GeminiService.MIN_REQUEST_INTERVAL) {
-      const waitTime = GeminiService.MIN_REQUEST_INTERVAL - timeSinceLastRequest;
+    const interval = this.getMIN_REQUEST_INTERVAL();
+    if (timeSinceLastRequest < interval) {
+      const waitTime = interval - timeSinceLastRequest;
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
     GeminiService.lastRequestTime = Date.now();
   }
 
-  private rotateKey(): boolean {
+  private rotateKey(isQuotaError: boolean = true): boolean {
     const currentKey = this.lastKey;
     if (currentKey) {
-      console.warn(`[MediTrans] Key exhausted: ${currentKey.substring(0, 8)}... Marking as exhausted for 5s.`);
+      // 429 Quota errors usually last 1 minute on Gemini Free Tier
+      // 503/Overloaded errors are transient (5s)
+      const duration = isQuotaError ? 60000 : 5000;
+      const typeStr = isQuotaError ? "Quota Limit (429)" : "High Demand (503)";
+      
+      console.warn(`[MediTrans] Key exhausted: ${currentKey.substring(0, 8)}... (${typeStr}). Marking as exhausted for ${duration / 1000}s.`);
+      
       this.exhaustedKeys.add(currentKey);
-      // Fast recovery for high-demand rotation
       setTimeout(() => {
         this.exhaustedKeys.delete(currentKey);
-      }, 5000);
+      }, duration);
     }
 
     this.aiInstance = null;
@@ -219,20 +233,17 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
                                  error.message?.toLowerCase().includes("high demand");
         
         if ((isQuotaError || isUnavailableError) && retryCount < MAX_RETRIES) {
-          // If it's a quota error, try to rotate the key first
-          if (isQuotaError) {
-            const canRotate = this.rotateKey();
-            if (canRotate) {
-              console.log(`[MediTrans] Quota exceeded. Rotated to a different API Key. Retrying...`);
-              retryCount++;
-              // Jittered delay when rotating
-              await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
-              continue;
-            }
+          const canRotate = this.rotateKey(isQuotaError);
+          if (canRotate) {
+            const errorType = isQuotaError ? "Quota limited" : "High demand";
+            console.log(`[MediTrans] ${errorType}. Rotated to a different API Key. Retrying...`);
+            retryCount++;
+            const baseDelay = isQuotaError ? 2000 : 1000;
+            await new Promise(resolve => setTimeout(resolve, baseDelay + Math.random() * 1000));
+            continue;
           }
 
           retryCount++;
-          // Exponential backoff with jitter
           const delay = Math.pow(2, retryCount) * 2000 + Math.random() * 2000;
           const errorType = isQuotaError ? "Quota exceeded (All keys)" : "Model unavailable (503)";
           console.warn(`${errorType}. Retrying in ${Math.round(delay)}ms... (Attempt ${retryCount}/${MAX_RETRIES})`);
@@ -248,8 +259,8 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         if (isQuotaError) {
           const totalKeys = this.apiKeys.length + (this.systemKey ? 1 : 0);
           throw new Error(`Bạn đã hết hạn mức sử dụng API (Quota exceeded). 
-            Hệ thống đã tự động thử qua ${totalKeys} API Key khả dụng nhưng tất cả đều đã chạm giới hạn (15 yêu cầu/phút mỗi Key).
-            Vui lòng đợi khoảng 1 phút để các Key hồi phục hoặc thêm API Key mới trong phần Cài đặt.`);
+            Hệ thống đã thử qua tất cả ${totalKeys} API Key khả dụng nhưng đều đã chạm giới hạn (15 yêu cầu/phút mỗi Key).
+            Vui lòng đợi khoảng 1 phút hoặc thêm API Key mới trong phần Cài đặt.`);
         }
         if (isUnavailableError) {
           throw new Error("Hệ thống đang quá tải do nhu cầu sử dụng cao. Vui lòng thử lại sau giây lát.");
@@ -595,9 +606,9 @@ ${content}`;
                             error.message?.toLowerCase().includes("resource_exhausted");
         
         if (isQuotaError && retryCount < MAX_RETRIES) {
-          const rotated = this.rotateKey();
+          const rotated = this.rotateKey(true);
           if (rotated) {
-            console.log(`[MediTrans] Summary Quota exceeded. Rotated to a different API Key. Retrying...`);
+            console.log(`[MediTrans] Summary Quota exceeded. Rotated Key. Retrying...`);
             retryCount++;
             await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
             continue;
