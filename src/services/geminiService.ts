@@ -3,14 +3,14 @@ import { TranslationService, TranslationOptions } from "./translationService";
 
 export class GeminiService implements TranslationService {
   private apiKeys: string[] = [];
-  private currentKeyIndex: number = 0;
   private modelName: string;
   private aiInstance: any = null;
   private lastKey: string | null = null;
   private exhaustedKeys: Set<string> = new Set();
+  private lastUsed: Map<string, number> = new Map();
   private systemKey: string | null = null;
   private static lastRequestTime: number = 0;
-  private static MIN_REQUEST_INTERVAL: number = 1500; // Minimum 1.5s between any two requests to stay safe
+  private static MIN_REQUEST_INTERVAL: number = 1000; // Increased speed slightly
 
   constructor(apiKeys?: string | string[], modelName: string = "gemini-flash-latest") {
     this.modelName = modelName;
@@ -18,14 +18,16 @@ export class GeminiService implements TranslationService {
     if (Array.isArray(apiKeys)) {
       this.apiKeys = apiKeys.filter(k => k && k.trim() !== "");
     } else if (apiKeys && apiKeys.trim() !== "") {
-      // Support comma or newline separated keys
       this.apiKeys = apiKeys.split(/[,\n]/).map(k => k.trim()).filter(k => k !== "");
     }
     
-    // Get system key from environment
+    // Initialize lastUsed for all keys
+    this.apiKeys.forEach(k => this.lastUsed.set(k, 0));
+    
     const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
     if (envKey && envKey.trim() !== "" && envKey !== "MY_GEMINI_API_KEY") {
       this.systemKey = envKey;
+      this.lastUsed.set(envKey, 0);
     }
 
     console.log(`[MediTrans] GeminiService initialized with ${this.apiKeys.length} manual keys and ${this.systemKey ? '1' : '0'} system key. Model: ${modelName}`);
@@ -34,32 +36,24 @@ export class GeminiService implements TranslationService {
   private getAIInstance(): any {
     let key = "";
     
-    // 1. Try to find a non-exhausted manual key using Round Robin
-    if (this.apiKeys.length > 0) {
-      // Pick next key in sequence to balance load across all keys
-      for (let i = 0; i < this.apiKeys.length; i++) {
-        const idx = (this.currentKeyIndex) % this.apiKeys.length;
-        this.currentKeyIndex++; // Increment for next time
-        
-        const potentialKey = this.apiKeys[idx];
-        if (!this.exhaustedKeys.has(potentialKey)) {
-          key = potentialKey;
-          break;
-        }
-      }
+    // Build list of all potential available keys
+    const availableKeys = [...this.apiKeys];
+    if (this.systemKey) availableKeys.push(this.systemKey);
+
+    // Filter out exhausted and sort by last usage (Oldest usage first = Optimal rotation)
+    const sortedKeys = availableKeys
+      .filter(k => !this.exhaustedKeys.has(k))
+      .sort((a, b) => (this.lastUsed.get(a) || 0) - (this.lastUsed.get(b) || 0));
+
+    if (sortedKeys.length > 0) {
+      key = sortedKeys[0];
+      this.lastUsed.set(key, Date.now());
     }
     
-    // 2. Fallback to system key if no manual key found or all manual keys exhausted
-    if (!key && this.systemKey && !this.exhaustedKeys.has(this.systemKey)) {
-      key = this.systemKey;
-    }
-    
-    // If still no key, we can't proceed
     if (!key || key.trim() === "") {
       return null;
     }
     
-    // Cache the instance if the key hasn't changed (saves re-init cost)
     if (this.aiInstance && this.lastKey === key) {
       return this.aiInstance;
     }
@@ -87,29 +81,23 @@ export class GeminiService implements TranslationService {
   private rotateKey(): boolean {
     const currentKey = this.lastKey;
     if (currentKey) {
-      console.warn(`[MediTrans] Key exhausted: ${currentKey.substring(0, 8)}... Marking as exhausted for 60s.`);
+      console.warn(`[MediTrans] Key exhausted: ${currentKey.substring(0, 8)}... Marking as exhausted for 5s.`);
       this.exhaustedKeys.add(currentKey);
-      // Reset exhausted status after 60 seconds
+      // Fast recovery for high-demand rotation
       setTimeout(() => {
         this.exhaustedKeys.delete(currentKey);
-        console.log(`[MediTrans] Key recovered: ${currentKey.substring(0, 8)}...`);
-      }, 60000);
+      }, 5000);
     }
 
-    // Force re-selection in next getAIInstance call
     this.aiInstance = null;
     this.lastKey = null;
     
-    // Move to next index for next attempt
-    if (this.apiKeys.length > 0) {
-      this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-    }
-
     // Check if we have ANY key left to try
-    const hasManualKey = this.apiKeys.some(k => !this.exhaustedKeys.has(k));
-    const hasSystemKey = this.systemKey && !this.exhaustedKeys.has(this.systemKey);
+    const availableKeys = [...this.apiKeys];
+    if (this.systemKey) availableKeys.push(this.systemKey);
+    const hasAny = availableKeys.some(k => !this.exhaustedKeys.has(k));
     
-    return !!(hasManualKey || hasSystemKey);
+    return hasAny;
   }
 
   async hasApiKey(): Promise<boolean> {
@@ -151,11 +139,6 @@ export class GeminiService implements TranslationService {
       throw new Error("Translation aborted");
     }
 
-    const ai = this.getAIInstance();
-    if (!ai) {
-      throw new Error("Không tìm thấy API Key. Vui lòng nhập API Key trong phần Cài đặt hoặc chọn API Key từ hệ thống.");
-    }
-
     const systemInstruction = `Dịch Y khoa OCR: Trích xuất & dịch TOÀN BỘ văn bản từ ảnh sang tiếng Việt.
 Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách).
 Thuật ngữ y khoa chuẩn. Không thêm lời dẫn.
@@ -164,7 +147,7 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
 
     const prompt = `Dịch trang ${pageNumber} sang tiếng Việt.`;
 
-    const MAX_RETRIES = 5; // Increased retries
+    const MAX_RETRIES = 5;
     let retryCount = 0;
 
     while (retryCount <= MAX_RETRIES) {
@@ -172,6 +155,11 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         throw new Error("Translation aborted");
       }
       
+      const ai = this.getAIInstance();
+      if (!ai) {
+        throw new Error("Không tìm thấy API Key khả dụng. Vui lòng kiểm tra lại Key trong Cài đặt.");
+      }
+
       await this.waitForRateLimit();
 
       try {
@@ -526,6 +514,21 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
       document: "toàn bộ tài liệu",
       chapter: "chương/phần này"
     };
+
+    const systemInstruction = `Bạn là một bác sĩ chuyên khoa cấp cao và nhà nghiên cứu y học uy tín.
+Nghiêm túc phân tích và tóm tắt chi tiết nội dung y khoa để hỗ trợ cập nhật kiến thức chuyên môn cho nhân viên y tế.
+
+Yêu cầu bản tóm tắt phải CHUYÊN SÂU và bao quát:
+1. Tổng quan & Bối cảnh: Mục đích chính của văn bản.
+2. Cơ chế bệnh sinh & Nguyên lý y học.
+3. Chẩn đoán & Cận lâm sàng: Các triệu chứng và xét nghiệm quan trọng.
+4. Điều trị & Quản lý: Can thiệp, dược lý học, quy trình thực hành.
+5. Cập nhật & Điểm mới: Các bằng chứng y học mới nhất.
+6. Kết luận & Ứng dụng thực hành.
+
+Phong cách: Markdown chuyên nghiệp (H2, H3, bảng), in đậm thuật ngữ chuyên môn.`;
+
+    const prompt = `Hãy tóm tắt nội dung sau đây (${typeLabels[type]}):\n\n${content}`;
 
     const MAX_RETRIES = 5;
     let retryCount = 0;

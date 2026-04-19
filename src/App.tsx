@@ -47,6 +47,7 @@ import {
   Plus,
   Key,
   Activity,
+  Zap,
   ShieldCheck,
   ShieldAlert,
   User as UserIcon,
@@ -497,6 +498,7 @@ export default function App() {
   const [showTranslationPanel, setShowTranslationPanel] = useState(false);
   const [mobileViewMode, setMobileViewMode] = useState<'pdf' | 'translation' | 'split'>('pdf');
   const [autoTranslate, setAutoTranslate] = useState(false);
+  const [autoTranslateLookAhead, setAutoTranslateLookAhead] = useState(2);
   const [zoom, setZoom] = useState(0.82); // Default to 82% as requested
   const [isAutoFit, setIsAutoFit] = useState(true);
   
@@ -2217,9 +2219,13 @@ export default function App() {
   }, [pdfDoc, numPages, translationService]);
 
   useEffect(() => {
-    if (pdfDoc && autoTranslate && translations[currentPage]?.status === 'success' && !isTranslating) {
-      // Look ahead up to 2 pages to maintain a buffer
-      const pagesToBuffer = [currentPage + 1, currentPage + 2];
+    if (pdfDoc && autoTranslate && !isTranslating) {
+      // Look ahead based on setting
+      const pagesToBuffer = [];
+      for (let i = 1; i <= autoTranslateLookAhead; i++) {
+        pagesToBuffer.push(currentPage + i);
+      }
+      
       const controllers: AbortController[] = [];
       
       for (const pageNum of pagesToBuffer) {
@@ -2242,7 +2248,7 @@ export default function App() {
         controllers.forEach(c => c.abort());
       };
     }
-  }, [currentPage, pdfDoc, autoTranslate, translations, numPages, preTranslatePage, isTranslating]);
+  }, [currentPage, pdfDoc, autoTranslate, translations, numPages, preTranslatePage, isTranslating, autoTranslateLookAhead]);
 
   useEffect(() => {
     if (user && fileId) {
@@ -4276,6 +4282,54 @@ export default function App() {
                     </AnimatePresence>
                   </div>
                 )}
+
+                <div className="space-y-4 pt-4 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-emerald-500" />
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-widest">
+                        Tự động dịch (Auto-Translate)
+                      </label>
+                    </div>
+                    <button 
+                      onClick={() => setAutoTranslate(!autoTranslate)}
+                      className={cn(
+                        "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none",
+                        autoTranslate ? "bg-emerald-500" : "bg-slate-200"
+                      )}
+                    >
+                      <span className={cn(
+                        "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                        autoTranslate ? "translate-x-6" : "translate-x-1"
+                      )} />
+                    </button>
+                  </div>
+
+                  {autoTranslate && (
+                    <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                          Số trang dịch trước (Buffer)
+                        </label>
+                        <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">
+                          {autoTranslateLookAhead} trang
+                        </span>
+                      </div>
+                      <input 
+                        type="range"
+                        min="0"
+                        max="5"
+                        step="1"
+                        value={autoTranslateLookAhead}
+                        onChange={(e) => setAutoTranslateLookAhead(parseInt(e.target.value))}
+                        className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                      />
+                      <p className="text-[9px] text-slate-400 italic">
+                        * Tự động dịch trước các trang tiếp theo để trải nghiệm đọc mượt mà hơn.
+                      </p>
+                    </div>
+                  )}
+                </div>
 
                 <div>
                   <div className="flex items-center justify-between mb-2">
