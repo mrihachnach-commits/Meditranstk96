@@ -2013,91 +2013,128 @@ export default function App() {
 
     try {
       const startTime = Date.now();
+      const currentFileId = fileIdRef.current;
       console.log(`[MediTrans] Bắt đầu dịch trang ${targetPage}...`);
 
-      // Use cached image if available for instant start
+      // Determine if we should use split translation for speed
+      const activeVaultKeysCount = userKeys.filter(k => k.status === 'active').length;
+      const totalKeys = activeVaultKeysCount + (hasEnvKey ? 1 : 0);
+      const useSplit = totalKeys >= 2;
+      
       let imageBuffer = "";
-      if (lastRenderedImageRef.current && 
-          lastRenderedImageRef.current.page === targetPage && 
-          // Allow small zoom difference for cache hits (rounding issues)
-          Math.abs(lastRenderedImageRef.current.zoom - zoom) < 0.05) {
-        imageBuffer = lastRenderedImageRef.current.buffer;
-        console.log(`[MediTrans] Sử dụng ảnh đã cache, khởi động dịch tức thì!`);
-      } else {
-        // Create a temporary canvas for optimized capture if cache is missing
-        const originalCanvas = canvasRef.current;
-        
-        // Final safety check: ensure the canvas we're about to capture is still the right one
-        if (targetPage !== currentPageRef.current || isRenderingRef.current) {
-          console.log(`[MediTrans] Hủy capture trang ${targetPage} do thay đổi trạng thái (Page: ${currentPageRef.current}, Rendering: ${isRenderingRef.current})`);
-          return;
-        }
+      let splitImages: { top: string, bottom: string } | null = null;
+      const originalCanvas = canvasRef.current;
 
-        const MAX_DIMENSION = 1024; 
-        
+      const prepareImages = () => {
+        if (!originalCanvas) return { full: "", top: "", bottom: "" };
+
+        const MAX_DIMENSION = useSplit ? 900 : 1024; 
         let captureCanvas = originalCanvas;
         
-        // Resize if the original is too large to reduce payload size and API latency
         if (originalCanvas.width > MAX_DIMENSION || originalCanvas.height > MAX_DIMENSION) {
           const tempCanvas = document.createElement('canvas');
           const ratio = Math.min(MAX_DIMENSION / originalCanvas.width, MAX_DIMENSION / originalCanvas.height);
           tempCanvas.width = originalCanvas.width * ratio;
           tempCanvas.height = originalCanvas.height * ratio;
-          
           const tempCtx = tempCanvas.getContext('2d');
           if (tempCtx) {
             tempCtx.drawImage(originalCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
             captureCanvas = tempCanvas;
-            console.log(`[MediTrans] Đã tối ưu kích thước ảnh: ${tempCanvas.width}x${tempCanvas.height}`);
           }
         }
 
-        imageBuffer = captureCanvas.toDataURL('image/jpeg', 0.65);
+        if (useSplit) {
+          const halfHeight = Math.floor(captureCanvas.height / 2);
+          const overlap = Math.floor(halfHeight * 0.15); // 15% overlap
+          
+          const topCanvas = document.createElement('canvas');
+          topCanvas.width = captureCanvas.width;
+          topCanvas.height = halfHeight + overlap;
+          topCanvas.getContext('2d')?.drawImage(captureCanvas, 0, 0, captureCanvas.width, halfHeight + overlap, 0, 0, captureCanvas.width, halfHeight + overlap);
+          
+          const botCanvas = document.createElement('canvas');
+          botCanvas.width = captureCanvas.width;
+          botCanvas.height = (captureCanvas.height - halfHeight) + overlap;
+          botCanvas.getContext('2d')?.drawImage(captureCanvas, 0, halfHeight - overlap, captureCanvas.width, botCanvas.height, 0, 0, captureCanvas.width, botCanvas.height);
+          
+          return {
+            full: captureCanvas.toDataURL('image/jpeg', 0.6),
+            top: topCanvas.toDataURL('image/jpeg', 0.5), // Lower quality for parts to speed up
+            bottom: botCanvas.toDataURL('image/jpeg', 0.5)
+          };
+        }
+
+        return { full: captureCanvas.toDataURL('image/jpeg', 0.65), top: "", bottom: "" };
+      };
+
+      const images = prepareImages();
+      imageBuffer = images.full;
+      if (useSplit) splitImages = { top: images.top, bottom: images.bottom };
+
+      if (!imageBuffer) {
+        throw new Error("Không thể chụp ảnh trang PDF để dịch.");
       }
 
-      if (!imageBuffer || imageBuffer.length < 1000) {
-        throw new Error("Không thể chụp ảnh trang PDF để dịch. Vui lòng thử lại hoặc tải lại trang.");
-      }
+      console.log(`[MediTrans] Chế độ: ${useSplit ? 'Dịch song song (2 Keys)' : 'Dịch đơn (1 Key)'}. Payload: ${Math.round(imageBuffer.length/1024)}KB`);
 
-      console.log(`[MediTrans] Đã có ảnh buffer (${Math.round(imageBuffer.length/1024)}KB) sau ${Date.now() - startTime}ms. Đang gửi yêu cầu tới Gemini...`);
-
-      const stream = translationService.current.translateMedicalPageStream({
-        imageBuffer,
-        pageNumber: targetPage,
-        signal
-      });
-      
       let fullContent = "";
-      let lastUpdateTime = Date.now();
-      let lastSaveTime = Date.now();
-      let firstChunkReceived = false;
-      const UPDATE_INTERVAL = 100; // Update UI every 100ms for smooth streaming without lag
-      const SAVE_INTERVAL = 5000; // Save to Firestore every 5 seconds for persistence
+      
+      if (useSplit && splitImages) {
+        let topContent = "";
+        let bottomContent = "";
+        let topDone = false;
+        let bottomDone = false;
 
-      for await (const chunk of stream) {
-        if (!firstChunkReceived) {
-          firstChunkReceived = true;
-          console.log(`[MediTrans] Đ nhận phản hồi đầu tiên sau ${Date.now() - startTime}ms`);
-        }
-        fullContent += chunk;
-        const now = Date.now();
+        const topStream = translationService.current.translateMedicalPageStream({
+          imageBuffer: splitImages.top,
+          pageNumber: targetPage,
+          signal
+        });
+
+        const bottomStream = translationService.current.translateMedicalPageStream({
+          imageBuffer: splitImages.bottom,
+          pageNumber: targetPage,
+          signal
+        });
+
+        const updateCombined = () => {
+          const combined = topContent + (bottomContent ? "\n\n---\n\n" + bottomContent : "");
+          setActiveTranslation({ page: targetPage, content: combined, status: 'loading' });
+        };
+
+        const consumeTop = async () => {
+          for await (const chunk of topStream) {
+            topContent += chunk;
+            updateCombined();
+          }
+          topDone = true;
+        };
+
+        const consumeBottom = async () => {
+          for await (const chunk of bottomStream) {
+            bottomContent += chunk;
+            updateCombined();
+          }
+          bottomDone = true;
+        };
+
+        await Promise.all([consumeTop(), consumeBottom()]);
+        fullContent = topContent + "\n\n---\n\n" + bottomContent;
+      } else {
+        const stream = translationService.current.translateMedicalPageStream({
+          imageBuffer,
+          pageNumber: targetPage,
+          signal
+        });
         
-        // Update UI
-        if (now - lastUpdateTime > UPDATE_INTERVAL) {
-          setActiveTranslation({ page: targetPage, content: fullContent, status: 'loading' });
-          lastUpdateTime = now;
-        }
-
-        // Periodic sync to Firestore for persistence
-        if (user && fileId && now - lastSaveTime > SAVE_INTERVAL && fullContent.length > 0) {
-          lastSaveTime = now;
-          const path = `users/${user.uid}/documents/${fileId}/pages/${targetPage}`;
-          // Fire and forget periodic save
-          setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
-            content: fullContent,
-            status: 'loading',
-            updatedAt: serverTimestamp()
-          }, { merge: true }).catch(err => handleFirestoreError(err, OperationType.WRITE, path));
+        let lastUpdateTime = Date.now();
+        for await (const chunk of stream) {
+          fullContent += chunk;
+          const now = Date.now();
+          if (now - lastUpdateTime > 100) {
+            setActiveTranslation({ page: targetPage, content: fullContent, status: 'loading' });
+            lastUpdateTime = now;
+          }
         }
       }
       
@@ -2306,43 +2343,43 @@ export default function App() {
   }, [pdfDoc, numPages, user, fileId, translationService]);
 
   useEffect(() => {
-    if (pdfDoc && autoTranslate && !isTranslating) {
-      // Look ahead based on setting, but limit to 1 concurrent pre-translation
-      // to avoid clogging the quota for the user's focus page
-      if (translatingPagesRef.current.size >= 1) return;
-
+    if (pdfDoc && autoTranslate) {
+      // Find all pages in the look-ahead window that need translation
       const pagesToBuffer = [];
       for (let i = 1; i <= autoTranslateLookAhead; i++) {
-        pagesToBuffer.push(currentPage + i);
+        const pageNum = currentPage + i;
+        if (pageNum <= numPages && 
+            !translationsRef.current[pageNum] && 
+            !translatingPagesRef.current.has(pageNum)) {
+          pagesToBuffer.push(pageNum);
+        }
       }
-      
-      const controllers: AbortController[] = [];
-      
-      // Find the first page that needs translation
-      const nextPageToTranslate = pagesToBuffer.find(pageNum => 
-        pageNum <= numPages && 
-        !translationsRef.current[pageNum] && 
-        !translatingPagesRef.current.has(pageNum)
-      );
 
-      if (nextPageToTranslate) {
+      if (pagesToBuffer.length === 0) return;
+
+      // Limit concurrent translations to avoid browser/network congestion, 
+      // even if we have many keys. 5 is a good balance.
+      const MAX_CONCURRENT_PRE_TRANSLATION = 5;
+      const currentConcurrency = translatingPagesRef.current.size;
+      const spaceLeft = MAX_CONCURRENT_PRE_TRANSLATION - currentConcurrency;
+
+      if (spaceLeft <= 0) return;
+
+      const pagesToStart = pagesToBuffer.slice(0, spaceLeft);
+
+      pagesToStart.forEach((pageNum, index) => {
         const controller = new AbortController();
-        controllers.push(controller);
-        preTranslateControllersRef.current.set(nextPageToTranslate, controller);
+        preTranslateControllersRef.current.set(pageNum, controller);
         
-        const timer = setTimeout(() => {
-          preTranslatePage(nextPageToTranslate, controller.signal).finally(() => {
-            preTranslateControllersRef.current.delete(nextPageToTranslate);
+        // Stagger starts slightly (200ms) to avoid simultaneous browser capture CPU peaks
+        setTimeout(() => {
+          preTranslatePage(pageNum, controller.signal).finally(() => {
+            preTranslateControllersRef.current.delete(pageNum);
           });
-        }, 1000); // 1s delay to prioritize UI stability
-        
-        return () => {
-          clearTimeout(timer);
-          controller.abort();
-        };
-      }
+        }, index * 200);
+      });
     }
-  }, [currentPage, pdfDoc, autoTranslate, numPages, preTranslatePage, isTranslating, autoTranslateLookAhead]);
+  }, [currentPage, pdfDoc, autoTranslate, numPages, preTranslatePage, autoTranslateLookAhead]);
 
   useEffect(() => {
     if (user && fileId) {

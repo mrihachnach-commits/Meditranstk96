@@ -4,12 +4,9 @@ import { TranslationService, TranslationOptions } from "./translationService";
 export class GeminiService implements TranslationService {
   private apiKeys: string[] = [];
   private modelName: string;
-  private aiInstance: any = null;
-  private lastKey: string | null = null;
   private exhaustedKeys: Set<string> = new Set();
-  private lastUsed: Map<string, number> = new Map();
   private systemKey: string | null = null;
-  private static lastRequestTime: number = 0;
+  private static globalKeyLastUsed: Map<string, number> = new Map();
 
   constructor(apiKeys?: string | string[], modelName: string = "gemini-flash-latest") {
     this.modelName = modelName;
@@ -20,122 +17,92 @@ export class GeminiService implements TranslationService {
       this.apiKeys = apiKeys.split(/[,\n]/).map(k => k.trim()).filter(k => k !== "");
     }
     
-    // Initialize lastUsed for all keys
-    this.apiKeys.forEach(k => this.lastUsed.set(k, 0));
+    // Initialize lastUsed if not already in static map
+    this.apiKeys.forEach(k => {
+      if (!GeminiService.globalKeyLastUsed.has(k)) {
+        GeminiService.globalKeyLastUsed.set(k, 0);
+      }
+    });
     
     const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
     if (envKey && envKey.trim() !== "" && envKey !== "MY_GEMINI_API_KEY") {
       this.systemKey = envKey;
-      this.lastUsed.set(envKey, 0);
+      if (!GeminiService.globalKeyLastUsed.has(envKey)) {
+        GeminiService.globalKeyLastUsed.set(envKey, 0);
+      }
     }
 
     console.log(`[MediTrans] GeminiService initialized with ${this.apiKeys.length} manual keys and ${this.systemKey ? '1' : '0'} system key. Model: ${modelName}`);
   }
 
   private getMIN_REQUEST_INTERVAL(): number {
-    const totalKeys = this.apiKeys.length + (this.systemKey ? 1 : 0);
-    // Each key has a ~15 RPM limit on Gemini Flash (1 request per 4s)
-    // To be safe and distribute load, we can lower the interval as we add keys
-    if (totalKeys > 4) return 500; // max 120 RPM
-    if (totalKeys > 1) return 800; // max 75 RPM
-    return 1500; // Default fallback for single key (40 RPM, still higher than 15 but handles bursts)
+    return 4000; // Standard Gemini Free Tier limit (15 RPM -> 1 req / 4s)
   }
 
-  private getAIInstance(): any {
-    let key = "";
-    
-    // Build list of all potential available keys
+  private getBestAvailableKey(): string | null {
     const availableKeys = [...this.apiKeys];
     if (this.systemKey) availableKeys.push(this.systemKey);
 
-    // Filter out exhausted and sort by last usage (Oldest usage first = Optimal rotation)
+    // Filter out exhausted and sort by global last usage
     const sortedKeys = availableKeys
       .filter(k => !this.exhaustedKeys.has(k))
-      .sort((a, b) => (this.lastUsed.get(a) || 0) - (this.lastUsed.get(b) || 0));
+      .sort((a, b) => (GeminiService.globalKeyLastUsed.get(a) || 0) - (GeminiService.globalKeyLastUsed.get(b) || 0));
 
-    if (sortedKeys.length > 0) {
-      key = sortedKeys[0];
-      this.lastUsed.set(key, Date.now());
-    }
-    
-    if (!key || key.trim() === "") {
-      return null;
-    }
-    
-    if (this.aiInstance && this.lastKey === key) {
-      return this.aiInstance;
-    }
+    return sortedKeys.length > 0 ? sortedKeys[0] : null;
+  }
 
+  private async acquireKeyAndInstance(): Promise<{ ai: any, key: string }> {
+    const key = this.getBestAvailableKey();
+    if (!key) throw new Error("Không có API Key nào khả dụng.");
+
+    await this.waitForKeyRateLimit(key);
+    
     try {
-      this.aiInstance = new GoogleGenAI({ apiKey: key });
-      this.lastKey = key;
-      return this.aiInstance;
+      const ai = new GoogleGenAI({ apiKey: key });
+      return { ai, key };
     } catch (e) {
-      console.error("Failed to initialize GoogleGenAI:", e);
-      return null;
+      console.error("Failed to initialize GoogleGenAI with key:", key.substring(0, 8), e);
+      throw e;
     }
   }
 
-  private async waitForRateLimit(): Promise<void> {
+  private async waitForKeyRateLimit(key: string): Promise<void> {
     const now = Date.now();
-    const timeSinceLastRequest = now - GeminiService.lastRequestTime;
+    const lastUsed = GeminiService.globalKeyLastUsed.get(key) || 0;
     const interval = this.getMIN_REQUEST_INTERVAL();
-    if (timeSinceLastRequest < interval) {
-      const waitTime = interval - timeSinceLastRequest;
+    
+    if (now - lastUsed < interval) {
+      const waitTime = interval - (now - lastUsed);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
-    GeminiService.lastRequestTime = Date.now();
+    GeminiService.globalKeyLastUsed.set(key, Date.now());
   }
 
-  private rotateKey(isQuotaError: boolean = true): boolean {
-    const currentKey = this.lastKey;
-    if (currentKey) {
-      // 429 Quota errors usually last 1 minute on Gemini Free Tier
-      // 503/Overloaded errors are transient (5s)
+  private rotateKey(exhaustedKey: string, isQuotaError: boolean = true): boolean {
+    if (exhaustedKey) {
       const duration = isQuotaError ? 60000 : 5000;
-      const typeStr = isQuotaError ? "Quota Limit (429)" : "High Demand (503)";
-      
-      console.warn(`[MediTrans] Key exhausted: ${currentKey.substring(0, 8)}... (${typeStr}). Marking as exhausted for ${duration / 1000}s.`);
-      
-      this.exhaustedKeys.add(currentKey);
-      setTimeout(() => {
-        this.exhaustedKeys.delete(currentKey);
-      }, duration);
+      this.exhaustedKeys.add(exhaustedKey);
+      setTimeout(() => this.exhaustedKeys.delete(exhaustedKey), duration);
     }
-
-    this.aiInstance = null;
-    this.lastKey = null;
     
-    // Check if we have ANY key left to try
     const availableKeys = [...this.apiKeys];
     if (this.systemKey) availableKeys.push(this.systemKey);
-    const hasAny = availableKeys.some(k => !this.exhaustedKeys.has(k));
-    
-    return hasAny;
+    return availableKeys.some(k => !this.exhaustedKeys.has(k));
   }
 
   async hasApiKey(): Promise<boolean> {
-    return this.getAIInstance() !== null;
+    return this.getBestAvailableKey() !== null;
   }
 
   async checkAvailableKeys(): Promise<{ envKey: boolean; manualKey: boolean; envKeyName?: string }> {
-    const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-    const manualKey = this.apiKeys[0]; // Check the first manual key if available
+    const envKey = this.systemKey;
+    const manualKey = this.apiKeys[0]; 
     
     const results = {
-      envKey: false,
-      manualKey: false,
+      envKey: !!envKey,
+      manualKey: !!manualKey,
       envKeyName: envKey ? "Hệ thống (Environment)" : undefined
     };
-
-    // Only check for presence and basic format, no network call to save quota
-    if (envKey && envKey.trim() !== "" && envKey !== "MY_GEMINI_API_KEY") {
-      results.envKey = true;
-    }
-
-    if (manualKey && manualKey.trim() !== "") {
-      results.manualKey = true;
-    }
 
     return results;
   }
@@ -169,12 +136,12 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         throw new Error("Translation aborted");
       }
       
-      const ai = this.getAIInstance();
-      if (!ai) {
+      let ai, key;
+      try {
+        ({ ai, key } = await this.acquireKeyAndInstance());
+      } catch (e: any) {
         throw new Error("Không tìm thấy API Key khả dụng. Vui lòng kiểm tra lại Key trong Cài đặt.");
       }
-
-      await this.waitForRateLimit();
 
       try {
         const response = await ai.models.generateContentStream({
@@ -205,10 +172,7 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
           }
           let chunkText = chunk.text;
           if (chunkText) {
-            // Hậu xử lý để tránh lỗi lặp dấu chấm quá nhiều gây treo UI hoặc lỗi model
-            // Thay thế chuỗi 6 dấu chấm trở lên bằng đúng 5 dấu chấm
             chunkText = chunkText.replace(/\.{6,}/g, '.....');
-            
             fullText += chunkText;
             yield chunkText;
           }
@@ -218,7 +182,6 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
           throw new Error("Model returned no text.");
         }
         
-        // Success, break the retry loop
         break;
 
       } catch (error: any) {
@@ -233,39 +196,24 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
                                  error.message?.toLowerCase().includes("high demand");
         
         if ((isQuotaError || isUnavailableError) && retryCount < MAX_RETRIES) {
-          const canRotate = this.rotateKey(isQuotaError);
+          const canRotate = this.rotateKey(key, isQuotaError);
           if (canRotate) {
             const errorType = isQuotaError ? "Quota limited" : "High demand";
             console.log(`[MediTrans] ${errorType}. Rotated to a different API Key. Retrying...`);
             retryCount++;
-            const baseDelay = isQuotaError ? 2000 : 1000;
-            await new Promise(resolve => setTimeout(resolve, baseDelay + Math.random() * 1000));
+            const baseDelay = isQuotaError ? 1000 : 500;
+            await new Promise(resolve => setTimeout(resolve, baseDelay + Math.random() * 500));
             continue;
           }
 
           retryCount++;
-          const delay = Math.pow(2, retryCount) * 2000 + Math.random() * 2000;
-          const errorType = isQuotaError ? "Quota exceeded (All keys)" : "Model unavailable (503)";
-          console.warn(`${errorType}. Retrying in ${Math.round(delay)}ms... (Attempt ${retryCount}/${MAX_RETRIES})`);
+          const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000;
+          console.warn(`All keys exhausted. Retrying in ${Math.round(delay)}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
 
-        console.error("Gemini Pro Streaming Error:", error);
-        
-        if (error.message?.includes("API key not valid")) {
-          throw new Error("API Key không hợp lệ. Vui lòng kiểm tra lại trong phần Cài đặt.");
-        }
-        if (isQuotaError) {
-          const totalKeys = this.apiKeys.length + (this.systemKey ? 1 : 0);
-          throw new Error(`Bạn đã hết hạn mức sử dụng API (Quota exceeded). 
-            Hệ thống đã thử qua tất cả ${totalKeys} API Key khả dụng nhưng đều đã chạm giới hạn (15 yêu cầu/phút mỗi Key).
-            Vui lòng đợi khoảng 1 phút hoặc thêm API Key mới trong phần Cài đặt.`);
-        }
-        if (isUnavailableError) {
-          throw new Error("Hệ thống đang quá tải do nhu cầu sử dụng cao. Vui lòng thử lại sau giây lát.");
-        }
-        throw new Error(`Lỗi dịch thuật: ${error.message || "Không rõ nguyên nhân"}`);
+        throw error;
       }
     }
   }
@@ -277,19 +225,6 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
       throw new Error("Translation aborted");
     }
 
-    const ai = this.getAIInstance();
-    if (!ai) {
-      throw new Error("Không tìm thấy API Key. Vui lòng nhập API Key trong phần Cài đặt hoặc chọn API Key từ hệ thống.");
-    }
-
-    const systemInstruction = `Dịch Y khoa OCR: Trích xuất & dịch TOÀN BỘ văn bản từ ảnh sang tiếng Việt.
-Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách).
-Thuật ngữ y khoa chuẩn. Không thêm lời dẫn.
-Rút gọn chuỗi dấu chấm (.) thành 3-5 dấu.
-Mỗi mục lục một dòng. Số trang khớp ảnh.`;
-
-    const prompt = `Dịch trang ${pageNumber} sang tiếng Việt.`;
-
     const MAX_RETRIES = 5;
     let retryCount = 0;
 
@@ -298,7 +233,20 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         throw new Error("Translation aborted");
       }
       
-      await this.waitForRateLimit();
+      let ai, key;
+      try {
+        ({ ai, key } = await this.acquireKeyAndInstance());
+      } catch (e) {
+        throw new Error("Không tìm thấy API Key khả dụng.");
+      }
+
+      const systemInstruction = `Dịch Y khoa OCR: Trích xuất & dịch TOÀN BỘ văn bản từ ảnh sang tiếng Việt.
+Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách).
+Thuật ngữ y khoa chuẩn. Không thêm lời dẫn.
+Rút gọn chuỗi dấu chấm (.) thành 3-5 dấu.
+Mỗi mục lục một dòng. Số trang khớp ảnh.`;
+
+      const prompt = `Dịch trang ${pageNumber} sang tiếng Việt.`;
 
       try {
         const response = await ai.models.generateContent({
@@ -323,7 +271,6 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         });
 
         let text = response.text || "Model returned no text.";
-        // Hậu xử lý để tránh lỗi lặp dấu chấm quá nhiều
         text = text.replace(/\.{6,}/g, '.....');
         return text;
       } catch (error: any) {
@@ -333,56 +280,21 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         const isQuotaError = error.message?.toLowerCase().includes("quota") || 
                            error.message?.toLowerCase().includes("429") ||
                            error.message?.toLowerCase().includes("resource_exhausted");
-        const isUnavailableError = error.message?.toLowerCase().includes("unavailable") || 
-                                 error.message?.toLowerCase().includes("503") ||
-                                 error.message?.toLowerCase().includes("high demand");
         
-        if ((isQuotaError || isUnavailableError) && retryCount < MAX_RETRIES) {
-          if (isQuotaError) {
-            const canRotate = this.rotateKey();
-            if (canRotate) {
-              console.log(`[MediTrans] Quota exceeded. Rotated to a different API Key. Retrying...`);
-              retryCount++;
-              await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
-              continue;
-            }
+        if (isQuotaError && retryCount < MAX_RETRIES) {
+          const canRotate = this.rotateKey(key);
+          if (canRotate) {
+            retryCount++;
+            continue;
           }
-
-          retryCount++;
-          const delay = Math.pow(2, retryCount) * 2000 + Math.random() * 2000;
-          const errorType = isQuotaError ? "Quota exceeded (All keys)" : "Model unavailable (503)";
-          console.warn(`${errorType}. Retrying in ${Math.round(delay)}ms... (Attempt ${retryCount}/${MAX_RETRIES})`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          continue;
         }
-
-        console.error("Gemini Translation Error:", error);
-        
-        if (error.message?.includes("API key not valid")) {
-          throw new Error("API Key không hợp lệ. Vui lòng kiểm tra lại trong phần Cài đặt.");
-        }
-        if (isQuotaError) {
-          const totalKeys = this.apiKeys.length + (this.systemKey ? 1 : 0);
-          throw new Error(`Bạn đã hết hạn mức sử dụng API (Quota exceeded). 
-            Hệ thống đã tự động thử qua ${totalKeys} API Key khả dụng nhưng tất cả đều đã chạm giới hạn (15 yêu cầu/phút mỗi Key).
-            Vui lòng đợi khoảng 1 phút để các Key hồi phục hoặc thêm API Key mới trong phần Cài đặt.`);
-        }
-        if (isUnavailableError) {
-          throw new Error("Hệ thống đang quá tải do nhu cầu sử dụng cao. Vui lòng thử lại sau giây lát.");
-        }
-        throw new Error(`Lỗi dịch thuật: ${error.message || "Không rõ nguyên nhân"}`);
+        throw error;
       }
     }
     return "Lỗi: Quá số lần thử lại.";
   }
 
   async lookupMedicalTerm(term: string): Promise<any> {
-    const ai = this.getAIInstance();
-
-    if (!ai) {
-      throw new Error("Không tìm thấy API Key. Vui lòng nhập API Key trong phần Cài đặt hoặc chọn API Key từ hệ thống.");
-    }
-
     const systemInstruction = `Chuyên gia từ điển y khoa: Cung cấp định nghĩa, dịch nghĩa, đồng nghĩa cho thuật ngữ y khoa bằng tiếng Việt. Chính xác, chuyên sâu, không bịa đặt.`;
 
     const prompt = `Hãy tra cứu thuật ngữ y khoa sau: "${term}"`;
@@ -391,6 +303,13 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
     let retryCount = 0;
 
     while (retryCount <= MAX_RETRIES) {
+      let ai, key;
+      try {
+        ({ ai, key } = await this.acquireKeyAndInstance());
+      } catch (e) {
+        throw new Error("Không tìm thấy API Key.");
+      }
+
       try {
         const response = await ai.models.generateContent({
           model: this.modelName,
@@ -424,65 +343,36 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         const text = response.text;
         if (!text) throw new Error("Model returned no text.");
         
-        // Clean up potential markdown code blocks
         const cleanJson = text.replace(/```json\n?|```/g, '').trim();
         return JSON.parse(cleanJson);
       } catch (error: any) {
         const isQuotaError = error.message?.toLowerCase().includes("quota") || 
                            error.message?.toLowerCase().includes("429") ||
                            error.message?.toLowerCase().includes("resource_exhausted");
-        const isUnavailableError = error.message?.toLowerCase().includes("unavailable") || 
-                                 error.message?.toLowerCase().includes("503") ||
-                                 error.message?.toLowerCase().includes("high demand");
         
-        if ((isQuotaError || isUnavailableError) && retryCount < MAX_RETRIES) {
-          if (isQuotaError) {
-            const canRotate = this.rotateKey();
-            if (canRotate) {
-              retryCount++;
-              await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500));
-              continue;
-            }
+        if (isQuotaError && retryCount < MAX_RETRIES) {
+          const canRotate = this.rotateKey(key, true);
+          if (canRotate) {
+            retryCount++;
+            continue;
           }
-
-          retryCount++;
-          const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000;
-          const errorType = isQuotaError ? "Quota exceeded" : "Model unavailable (503)";
-          console.warn(`${errorType} for lookup. Retrying in ${Math.round(delay)}ms... (Attempt ${retryCount}/${MAX_RETRIES})`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          continue;
         }
-
-        if (isQuotaError) {
-          const totalKeys = this.apiKeys.length + (this.systemKey ? 1 : 0);
-          throw new Error(`Bạn đã hết hạn mức sử dụng API (Quota exceeded). 
-            Hệ thống đã tự động thử qua ${totalKeys} API Key khả dụng nhưng tất cả đều đã chạm giới hạn (15 yêu cầu/phút mỗi Key).
-            Vui lòng đợi khoảng 1 phút để các Key hồi phục hoặc thêm API Key mới trong phần Cài đặt.`);
-        }
-        if (isUnavailableError) {
-          throw new Error("Hệ thống đang quá tải do nhu cầu sử dụng cao. Vui lòng thử lại sau giây lát.");
-        }
-        throw new Error(`Lỗi tra cứu: ${error.message || "Không rõ nguyên nhân"}`);
+        throw error;
       }
     }
   }
 
   async performOCR(imageBuffer: string): Promise<string> {
-    const ai = this.getAIInstance();
-
-    if (!ai) {
-      throw new Error("Không tìm thấy API Key. Vui lòng nhập API Key trong phần Cài đặt hoặc chọn API Key từ hệ thống.");
+    let ai, key;
+    try {
+      ({ ai, key } = await this.acquireKeyAndInstance());
+    } catch (e) {
+      throw new Error("Không có API Key khả dụng.");
     }
 
     const systemInstruction = `
       Bạn là một chuyên gia OCR (Nhận diện ký tự quang học) y khoa.
       Nhiệm vụ của bạn là trích xuất CHÍNH XÁC văn bản từ hình ảnh vùng được chọn.
-      
-      YÊU CẦU:
-      1. Chỉ trả về văn bản được trích xuất, không thêm lời dẫn, không giải thích.
-      2. Nếu vùng chọn chứa thuật ngữ y khoa, hãy trích xuất chính xác thuật ngữ đó.
-      3. Nếu vùng chọn chứa nhiều dòng, hãy nối chúng lại thành một chuỗi văn bản hợp lý.
-      4. Nếu không tìm thấy văn bản nào, hãy trả về chuỗi rỗng.
     `;
 
     const prompt = "Hãy trích xuất văn bản từ hình ảnh này.";
@@ -526,29 +416,16 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
       chapter: "chương/phần này"
     };
 
-    const systemInstruction = `Bạn là một bác sĩ chuyên khoa cấp cao và nhà nghiên cứu y học uy tín.
-Nghiêm túc phân tích và tóm tắt chi tiết nội dung y khoa để hỗ trợ cập nhật kiến thức chuyên môn cho nhân viên y tế.
-
-Yêu cầu bản tóm tắt phải CHUYÊN SÂU và bao quát:
-1. Tổng quan & Bối cảnh: Mục đích chính của văn bản.
-2. Cơ chế bệnh sinh & Nguyên lý y học.
-3. Chẩn đoán & Cận lâm sàng: Các triệu chứng và xét nghiệm quan trọng.
-4. Điều trị & Quản lý: Can thiệp, dược lý học, quy trình thực hành.
-5. Cập nhật & Điểm mới: Các bằng chứng y học mới nhất.
-6. Kết luận & Ứng dụng thực hành.
-
-Phong cách: Markdown chuyên nghiệp (H2, H3, bảng), in đậm thuật ngữ chuyên môn.`;
-
-    const prompt = `Hãy tóm tắt nội dung sau đây (${typeLabels[type]}):\n\n${content}`;
-
     const MAX_RETRIES = 5;
     let retryCount = 0;
 
     while (retryCount <= MAX_RETRIES) {
       if (signal?.aborted) throw new Error("Summarization aborted");
 
-      const ai = this.getAIInstance();
-      if (!ai) {
+      let ai, key;
+      try {
+        ({ ai, key } = await this.acquireKeyAndInstance());
+      } catch (e) {
         throw new Error("Không tìm thấy API Key.");
       }
 
@@ -572,8 +449,6 @@ Phong cách trình bày:
       const prompt = `Hãy tóm tắt nội dung sau đây (${typeLabels[type]}):
 
 ${content}`;
-
-      await this.waitForRateLimit();
 
       try {
         const response = await ai.models.generateContentStream({
@@ -606,17 +481,14 @@ ${content}`;
                             error.message?.toLowerCase().includes("resource_exhausted");
         
         if (isQuotaError && retryCount < MAX_RETRIES) {
-          const rotated = this.rotateKey(true);
+          const rotated = this.rotateKey(key, true);
           if (rotated) {
-            console.log(`[MediTrans] Summary Quota exceeded. Rotated Key. Retrying...`);
             retryCount++;
-            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
             continue;
           }
         }
 
-        console.error("Gemini Summarization Error:", error);
-        throw new Error(`Lỗi tóm tắt: ${error.message || "Không rõ nguyên nhân"}`);
+        throw error;
       }
     }
   }
