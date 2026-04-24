@@ -88,6 +88,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   const [openingFileId, setOpeningFileId] = useState<string | null>(null);
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
   const user = auth.currentUser;
 
@@ -395,38 +396,56 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
                     {folder.name}
                   </span>
                 </div>
-                <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                <div className="absolute top-2 right-2 flex flex-col gap-1 z-10">
                   <button 
                     onClick={(e) => {
                       e.stopPropagation();
-                      setShowMoveModal({ id: folder.id, type: 'folder' });
+                      setActiveMenuId(activeMenuId === folder.id ? null : folder.id);
                     }}
-                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-indigo-500 shadow-sm border border-slate-100"
-                    title="Di chuyển"
+                    className="p-1.5 bg-white rounded-lg text-slate-400 hover:text-indigo-500 shadow-sm border border-slate-100 flex items-center justify-center sm:opacity-0 group-hover:opacity-100 transition-opacity"
                   >
-                    <Move className="w-3.5 h-3.5" />
+                    <MoreVertical className="w-3.5 h-3.5" />
                   </button>
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setRenameValue(folder.name);
-                      setShowRenameModal({ id: folder.id, name: folder.name, type: 'folder' });
-                    }}
-                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-indigo-500 shadow-sm border border-slate-100"
-                    title="Đổi tên"
-                  >
-                    <Edit className="w-3.5 h-3.5" />
-                  </button>
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowDeleteConfirm({ id: folder.id, type: 'folder', name: folder.name });
-                    }}
-                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-rose-500 shadow-sm border border-slate-100"
-                    title="Xóa"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  
+                  <div className={cn(
+                    "flex flex-col gap-1 transition-all",
+                    activeMenuId === folder.id ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none absolute"
+                  )}>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowMoveModal({ id: folder.id, type: 'folder' });
+                        setActiveMenuId(null);
+                      }}
+                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                      title="Di chuyển"
+                    >
+                      <Move className="w-3.5 h-3.5" />
+                    </button>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenameValue(folder.name);
+                        setShowRenameModal({ id: folder.id, name: folder.name, type: 'folder' });
+                        setActiveMenuId(null);
+                      }}
+                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                      title="Đổi tên"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                    </button>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowDeleteConfirm({ id: folder.id, type: 'folder', name: folder.name });
+                        setActiveMenuId(null);
+                      }}
+                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-rose-500 shadow-lg border border-slate-100"
+                      title="Xóa"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </motion.div>
             ))}
@@ -468,53 +487,69 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
                     {(file.size / 1024 / 1024).toFixed(2)} MB
                   </span>
                 </div>
-                <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                <div className="absolute top-2 right-2 flex flex-col gap-1 z-10">
                   <button 
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (file.downloadUrl) {
-                        window.open(file.downloadUrl, '_blank');
-                      } else {
-                        // Attempt to fallback to TinyVault if URL is relative or missing
-                        window.open(file.downloadUrl || '#', '_blank');
-                      }
+                      setActiveMenuId(activeMenuId === file.id ? null : file.id);
                     }}
-                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-emerald-500 shadow-sm border border-slate-100"
-                    title="Tải về"
+                    className="p-1.5 bg-white rounded-lg text-slate-400 hover:text-indigo-500 shadow-sm border border-slate-100 flex items-center justify-center sm:opacity-0 group-hover:opacity-100 transition-opacity"
                   >
-                    <Download className="w-3.5 h-3.5" />
+                    <MoreVertical className="w-3.5 h-3.5" />
                   </button>
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowMoveModal({ id: file.id, type: 'file' });
-                    }}
-                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-indigo-500 shadow-sm border border-slate-100"
-                    title="Di chuyển"
-                  >
-                    <Move className="w-3.5 h-3.5" />
-                  </button>
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setRenameValue(file.name);
-                      setShowRenameModal({ id: file.id, name: file.name, type: 'file' });
-                    }}
-                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-indigo-500 shadow-sm border border-slate-100"
-                    title="Đổi tên"
-                  >
-                    <Edit className="w-3.5 h-3.5" />
-                  </button>
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowDeleteConfirm({ id: file.id, type: 'file', name: file.name });
-                    }}
-                    className="p-1.5 bg-white rounded-lg text-slate-300 hover:text-rose-500 shadow-sm border border-slate-100"
-                    title="Xóa"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+
+                  <div className={cn(
+                    "flex flex-col gap-1 transition-all",
+                    activeMenuId === file.id ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none absolute"
+                  )}>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (file.downloadUrl) {
+                          window.open(file.downloadUrl, '_blank');
+                        }
+                        setActiveMenuId(null);
+                      }}
+                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-emerald-500 shadow-lg border border-slate-100"
+                      title="Tải về"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowMoveModal({ id: file.id, type: 'file' });
+                        setActiveMenuId(null);
+                      }}
+                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                      title="Di chuyển"
+                    >
+                      <Move className="w-3.5 h-3.5" />
+                    </button>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenameValue(file.name);
+                        setShowRenameModal({ id: file.id, name: file.name, type: 'file' });
+                        setActiveMenuId(null);
+                      }}
+                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                      title="Đổi tên"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                    </button>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowDeleteConfirm({ id: file.id, type: 'file', name: file.name });
+                        setActiveMenuId(null);
+                      }}
+                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-rose-500 shadow-lg border border-slate-100"
+                      title="Xóa"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </motion.div>
             ))}

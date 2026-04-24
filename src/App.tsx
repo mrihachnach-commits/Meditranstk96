@@ -164,6 +164,7 @@ interface TranslationState {
 }
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [currentFileName, setCurrentFileName] = useState<string>('');
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
@@ -238,7 +239,7 @@ export default function App() {
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
   const [isLocalOnly, setIsLocalOnly] = useState(false);
   const [showFolderSelectModal, setShowFolderSelectModal] = useState(false);
-  const [allFolders, setAllFolders] = useState<{id: string, name: string}[]>([]);
+  const [allFolders, setAllFolders] = useState<{id: string, name: string, parentId?: string | null}[]>([]);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean | null>(null);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null);
   
@@ -281,20 +282,48 @@ export default function App() {
 
   // Sync folders for late upload selection
   useEffect(() => {
-    const user = auth.currentUser;
-    if (!user) return;
+    if (!user) {
+      setAllFolders([]);
+      return;
+    }
 
     const q = query(collection(db, `users/${user.uid}/folders`), orderBy('name'));
     return onSnapshot(q, (snapshot) => {
       const folderList = snapshot.docs.map(doc => ({
         id: doc.id,
-        name: doc.data().name
+        name: doc.data().name,
+        parentId: doc.data().parentId
       }));
       setAllFolders(folderList);
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, `users/${user.uid}/folders`);
     });
-  }, []);
+  }, [user]);
+
+  // Helper to get full folder path
+  const getFolderPath = (folderId: string | null): string => {
+    if (!folderId) return 'Root';
+    const folder = allFolders.find(f => f.id === folderId);
+    if (!folder) return 'Unknown';
+    
+    const path = [folder.name];
+    let currentParentId = folder.parentId;
+    
+    // Guard against circular refs or too deep structure
+    let depth = 0;
+    while (currentParentId && depth < 20) {
+      const parent = allFolders.find(f => f.id === currentParentId);
+      if (parent) {
+        path.unshift(parent.name);
+        currentParentId = parent.parentId;
+      } else {
+        break;
+      }
+      depth++;
+    }
+    
+    return path.join(' / ');
+  };
 
   const handleLocalFileOpen = async (localFile: File) => {
     setIsPdfLoading(true);
@@ -520,7 +549,6 @@ export default function App() {
   const pageCacheRef = useRef<Map<number, { canvas: HTMLCanvasElement, zoom: number, textContent: any }>>(new Map());
   const CACHE_SIZE_LIMIT = 8; // Keep last 8 pages in memory for instant switching
 
-  const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [userRole, setUserRole] = useState<'admin' | 'user' | null>(null);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
@@ -4200,7 +4228,7 @@ export default function App() {
                     </div>
                     <div>
                       <p className="text-sm font-bold text-slate-700">{folder.name}</p>
-                      <p className="text-[10px] text-slate-400">ID: {folder.id}</p>
+                      <p className="text-[10px] text-slate-400">{getFolderPath(folder.id)}</p>
                     </div>
                   </button>
                 ))}
