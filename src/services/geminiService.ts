@@ -120,13 +120,18 @@ export class GeminiService implements TranslationService {
       throw new Error("Translation aborted");
     }
 
-    const systemInstruction = `Dịch Y khoa OCR: Trích xuất & dịch TOÀN BỘ văn bản từ ảnh sang tiếng Việt.
-Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách).
-Thuật ngữ y khoa chuẩn. Không thêm lời dẫn.
-Rút gọn chuỗi dấu chấm (.) thành 3-5 dấu.
-Mỗi mục lục một dòng. Số trang khớp ảnh.`;
+    const systemInstruction = `BẠN LÀ MỘT CHUYÊN GIA DỊCH THUẬT Y KHOA OCR.
+NHIỆM VỤ: Trích xuất và dịch TOÀN BỘ văn bản từ TRANG SỐ ${pageNumber} trong hình ảnh sang tiếng Việt.
 
-    const prompt = `Dịch trang ${pageNumber} sang tiếng Việt.`;
+YÊU CẦU QUAN TRỌNG:
+1. CHỈ DỊCH nội dung của trang này, không thêm nội dung từ các trang trước hoặc sau.
+2. Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách, tiêu đề).
+3. Sử dụng thuật ngữ y khoa chuyên môn chuẩn tiếng Việt. 
+4. KHÔNG THÊM lời dẫn ("Đây là bản dịch...", "Trang tiếp theo...") hoặc kết luận.
+5. Rút gọn chuỗi dấu chấm (.) dài thành tối đa 3-5 dấu.
+6. Nếu thấy số trang trong ảnh, hãy đảm bảo nội dung khớp với trang đó.`;
+
+    const prompt = `Hãy dịch văn bản trong hình ảnh (Trang ${pageNumber}) sang tiếng Việt.`;
 
     const MAX_RETRIES = 5;
     let retryCount = 0;
@@ -240,13 +245,18 @@ Mỗi mục lục một dòng. Số trang khớp ảnh.`;
         throw new Error("Không tìm thấy API Key khả dụng.");
       }
 
-      const systemInstruction = `Dịch Y khoa OCR: Trích xuất & dịch TOÀN BỘ văn bản từ ảnh sang tiếng Việt.
-Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách).
-Thuật ngữ y khoa chuẩn. Không thêm lời dẫn.
-Rút gọn chuỗi dấu chấm (.) thành 3-5 dấu.
-Mỗi mục lục một dòng. Số trang khớp ảnh.`;
+      const systemInstruction = `BẠN LÀ MỘT CHUYÊN GIA DỊCH THUẬT Y KHOA OCR.
+NHIỆM VỤ: Trích xuất và dịch TOÀN BỘ văn bản từ TRANG SỐ ${pageNumber} trong hình ảnh sang tiếng Việt.
 
-      const prompt = `Dịch trang ${pageNumber} sang tiếng Việt.`;
+YÊU CẦU QUAN TRỌNG:
+1. CHỈ DỊCH nội dung của trang này, không thêm nội dung từ các trang trước hoặc sau.
+2. Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách, tiêu đề).
+3. Sử dụng thuật ngữ y khoa chuyên môn chuẩn tiếng Việt. 
+4. KHÔNG THÊM lời dẫn ("Đây là bản dịch...", "Trang tiếp theo...") hoặc kết luận.
+5. Rút gọn chuỗi dấu chấm (.) dài thành tối đa 3-5 dấu.
+6. Nếu thấy số trang trong ảnh, hãy đảm bảo nội dung khớp với trang đó.`;
+
+      const prompt = `Hãy dịch văn bản trong hình ảnh (Trang ${pageNumber}) sang tiếng Việt.`;
 
       try {
         const response = await ai.models.generateContent({

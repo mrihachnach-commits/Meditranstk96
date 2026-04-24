@@ -2016,132 +2016,52 @@ export default function App() {
       const currentFileId = fileIdRef.current;
       console.log(`[MediTrans] Bắt đầu dịch trang ${targetPage}...`);
 
-      // Determine if we should use split translation for speed
-      const activeVaultKeysCount = userKeys.filter(k => k.status === 'active').length;
-      const totalKeys = activeVaultKeysCount + (hasEnvKey ? 1 : 0);
-      const useSplit = totalKeys >= 2;
-      
-      let imageBuffer = "";
-      let splitImages: { top: string, bottom: string } | null = null;
       const originalCanvas = canvasRef.current;
-
-      const prepareImages = () => {
-        if (!originalCanvas) return { full: "", top: "", bottom: "" };
-
-        const MAX_DIMENSION = useSplit ? 900 : 1024; 
-        let captureCanvas = originalCanvas;
-        
-        if (originalCanvas.width > MAX_DIMENSION || originalCanvas.height > MAX_DIMENSION) {
-          const tempCanvas = document.createElement('canvas');
-          const ratio = Math.min(MAX_DIMENSION / originalCanvas.width, MAX_DIMENSION / originalCanvas.height);
-          tempCanvas.width = originalCanvas.width * ratio;
-          tempCanvas.height = originalCanvas.height * ratio;
-          const tempCtx = tempCanvas.getContext('2d');
-          if (tempCtx) {
-            tempCtx.drawImage(originalCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
-            captureCanvas = tempCanvas;
-          }
+      
+      const MAX_DIMENSION = 1024; 
+      let captureCanvas = originalCanvas;
+      
+      if (originalCanvas.width > MAX_DIMENSION || originalCanvas.height > MAX_DIMENSION) {
+        const tempCanvas = document.createElement('canvas');
+        const ratio = Math.min(MAX_DIMENSION / originalCanvas.width, MAX_DIMENSION / originalCanvas.height);
+        tempCanvas.width = originalCanvas.width * ratio;
+        tempCanvas.height = originalCanvas.height * ratio;
+        const tempCtx = tempCanvas.getContext('2d');
+        if (tempCtx) {
+          tempCtx.drawImage(originalCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
+          captureCanvas = tempCanvas;
         }
-
-        if (useSplit) {
-          const halfHeight = Math.floor(captureCanvas.height / 2);
-          const overlap = Math.floor(halfHeight * 0.15); // 15% overlap
-          
-          const topCanvas = document.createElement('canvas');
-          topCanvas.width = captureCanvas.width;
-          topCanvas.height = halfHeight + overlap;
-          topCanvas.getContext('2d')?.drawImage(captureCanvas, 0, 0, captureCanvas.width, halfHeight + overlap, 0, 0, captureCanvas.width, halfHeight + overlap);
-          
-          const botCanvas = document.createElement('canvas');
-          botCanvas.width = captureCanvas.width;
-          botCanvas.height = (captureCanvas.height - halfHeight) + overlap;
-          botCanvas.getContext('2d')?.drawImage(captureCanvas, 0, halfHeight - overlap, captureCanvas.width, botCanvas.height, 0, 0, captureCanvas.width, botCanvas.height);
-          
-          return {
-            full: captureCanvas.toDataURL('image/jpeg', 0.6),
-            top: topCanvas.toDataURL('image/jpeg', 0.5), // Lower quality for parts to speed up
-            bottom: botCanvas.toDataURL('image/jpeg', 0.5)
-          };
-        }
-
-        return { full: captureCanvas.toDataURL('image/jpeg', 0.65), top: "", bottom: "" };
-      };
-
-      const images = prepareImages();
-      imageBuffer = images.full;
-      if (useSplit) splitImages = { top: images.top, bottom: images.bottom };
-
-      if (!imageBuffer) {
-        throw new Error("Không thể chụp ảnh trang PDF để dịch.");
       }
 
-      console.log(`[MediTrans] Chế độ: ${useSplit ? 'Dịch song song (2 Keys)' : 'Dịch đơn (1 Key)'}. Payload: ${Math.round(imageBuffer.length/1024)}KB`);
+      const imageBuffer = captureCanvas.toDataURL('image/jpeg', 0.65);
 
-      let fullContent = "";
+      if (!imageBuffer || imageBuffer.length < 1000) {
+        throw new Error("Không thể chụp ảnh trang PDF để dịch. Vui lòng thử lại.");
+      }
+
+      console.log(`[MediTrans] Payload: ${Math.round(imageBuffer.length/1024)}KB. Đang gửi yêu cầu tới Gemini...`);
+
+      const stream = translationService.current.translateMedicalPageStream({
+        imageBuffer,
+        pageNumber: targetPage,
+        signal
+      });
       
-      if (useSplit && splitImages) {
-        let topContent = "";
-        let bottomContent = "";
-        let topDone = false;
-        let bottomDone = false;
+      let fullContent = "";
+      let lastUpdateTime = Date.now();
 
-        const topStream = translationService.current.translateMedicalPageStream({
-          imageBuffer: splitImages.top,
-          pageNumber: targetPage,
-          signal
-        });
-
-        const bottomStream = translationService.current.translateMedicalPageStream({
-          imageBuffer: splitImages.bottom,
-          pageNumber: targetPage,
-          signal
-        });
-
-        const updateCombined = () => {
-          const combined = topContent + (bottomContent ? "\n\n---\n\n" + bottomContent : "");
-          setActiveTranslation({ page: targetPage, content: combined, status: 'loading' });
-        };
-
-        const consumeTop = async () => {
-          for await (const chunk of topStream) {
-            topContent += chunk;
-            updateCombined();
-          }
-          topDone = true;
-        };
-
-        const consumeBottom = async () => {
-          for await (const chunk of bottomStream) {
-            bottomContent += chunk;
-            updateCombined();
-          }
-          bottomDone = true;
-        };
-
-        await Promise.all([consumeTop(), consumeBottom()]);
-        fullContent = topContent + "\n\n---\n\n" + bottomContent;
-      } else {
-        const stream = translationService.current.translateMedicalPageStream({
-          imageBuffer,
-          pageNumber: targetPage,
-          signal
-        });
-        
-        let lastUpdateTime = Date.now();
-        for await (const chunk of stream) {
-          fullContent += chunk;
-          const now = Date.now();
-          if (now - lastUpdateTime > 100) {
-            setActiveTranslation({ page: targetPage, content: fullContent, status: 'loading' });
-            lastUpdateTime = now;
-          }
+      for await (const chunk of stream) {
+        fullContent += chunk;
+        const now = Date.now();
+        if (now - lastUpdateTime > 100) {
+          setActiveTranslation({ page: targetPage, content: fullContent, status: 'loading' });
+          lastUpdateTime = now;
         }
       }
       
       console.log(`[MediTrans] Hoàn thành dịch trang ${targetPage} trong ${Date.now() - startTime}ms`);
       
-      // Final update to ensure everything is rendered
-      setActiveTranslation({ page: targetPage, content: fullContent, status: 'loading' });
+      setActiveTranslation({ page: targetPage, content: fullContent, status: 'success' });
       
       const finalResult = { content: fullContent, status: 'success' as const };
       
