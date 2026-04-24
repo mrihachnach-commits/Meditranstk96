@@ -4649,7 +4649,7 @@ export default function App() {
                                 </p>
                                 {key.lastUsed && (
                                   <p className="text-[8px] text-slate-300 italic mt-0.5">
-                                    Dùng lần cuối: {new Date(key.lastUsed.toDate()).toLocaleString('vi-VN')}
+                                    Dùng lần cuối: {new Date(key.lastUsed.toDate()).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}
                                   </p>
                                 )}
                               </div>
