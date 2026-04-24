@@ -43,17 +43,21 @@ export class GeminiService implements TranslationService {
     const availableKeys = [...this.apiKeys];
     if (this.systemKey) availableKeys.push(this.systemKey);
 
-    // Filter out exhausted and sort by global last usage
-    const sortedKeys = availableKeys
-      .filter(k => !this.exhaustedKeys.has(k))
-      .sort((a, b) => (GeminiService.globalKeyLastUsed.get(a) || 0) - (GeminiService.globalKeyLastUsed.get(b) || 0));
+    if (availableKeys.length === 0) return null;
 
-    return sortedKeys.length > 0 ? sortedKeys[0] : null;
+    // Filter out exhausted keys
+    const validKeys = availableKeys.filter(k => !this.exhaustedKeys.has(k));
+    if (validKeys.length === 0) return null;
+
+    // Sort by global last usage to pick the most "rested" key
+    validKeys.sort((a, b) => (GeminiService.globalKeyLastUsed.get(a) || 0) - (GeminiService.globalKeyLastUsed.get(b) || 0));
+
+    return validKeys[0];
   }
 
   private async acquireKeyAndInstance(): Promise<{ ai: any, key: string }> {
     const key = this.getBestAvailableKey();
-    if (!key) throw new Error("Không có API Key nào khả dụng.");
+    if (!key) throw new Error("Không có API Key khả dụng (Tất cả đang bảo trì hoặc hết hạn mức).");
 
     await this.waitForKeyRateLimit(key);
     
@@ -61,7 +65,7 @@ export class GeminiService implements TranslationService {
       const ai = new GoogleGenAI({ apiKey: key });
       return { ai, key };
     } catch (e) {
-      console.error("Failed to initialize GoogleGenAI with key:", key.substring(0, 8), e);
+      console.error("[MediTrans] Failed to initialize GoogleGenAI with key:", key.substring(0, 8), e);
       throw e;
     }
   }
@@ -71,23 +75,28 @@ export class GeminiService implements TranslationService {
     const lastUsed = GeminiService.globalKeyLastUsed.get(key) || 0;
     const interval = this.getMIN_REQUEST_INTERVAL();
     
+    // If we've used this key recently, wait for the remainder of the interval
     if (now - lastUsed < interval) {
       const waitTime = interval - (now - lastUsed);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+      // Small optimization: If wait is very short, just proceed or use shorter delay
+      if (waitTime > 50) {
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
     }
+    
+    // Mark as used NOW
     GeminiService.globalKeyLastUsed.set(key, Date.now());
   }
 
   private rotateKey(exhaustedKey: string, isQuotaError: boolean = true): boolean {
     if (exhaustedKey) {
-      const duration = isQuotaError ? 60000 : 5000;
+      // If it's a quota error, block for 1 minute. Otherwise (e.g. 503) stay available but prioritized lower.
+      const duration = isQuotaError ? 60000 : 2000;
       this.exhaustedKeys.add(exhaustedKey);
       setTimeout(() => this.exhaustedKeys.delete(exhaustedKey), duration);
     }
     
-    const availableKeys = [...this.apiKeys];
-    if (this.systemKey) availableKeys.push(this.systemKey);
-    return availableKeys.some(k => !this.exhaustedKeys.has(k));
+    return this.getBestAvailableKey() !== null;
   }
 
   async hasApiKey(): Promise<boolean> {

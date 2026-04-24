@@ -1968,84 +1968,64 @@ export default function App() {
     const targetPage = pageNumber ?? currentPage;
     const currentFileId = fileIdRef.current;
     
-    if (!canvasRef.current || !translationService.current) return;
+    if (!canvasRef.current || !translationService.current || !currentFileId) return;
 
-    // Avoid double translation for the same page unless forced
+    // 1. Double initiation check
     const currentStatus = translationsRef.current[targetPage]?.status;
-    if (!force && (translatingPagesRef.current.has(targetPage) || (currentStatus === 'loading' || currentStatus === 'success'))) {
+    if (!force && (currentStatus === 'loading' || currentStatus === 'success')) {
+      // If it's already being handled by preTranslate, preTranslate will update activeTranslation if it becomes current
+      if (translatingPagesRef.current.has(targetPage)) return;
+    }
+
+    // 2. Promotion check: if it's already pre-translating, just mark as active but don't restart
+    if (translatingPagesRef.current.has(targetPage) && !force) {
+      console.log(`[MediTrans] Trang ${targetPage} đang được dịch (pre), chờ kết quả...`);
+      setIsTranslating(true);
       return;
     }
 
-    // Mark as translating IMMEDIATELY to prevent race conditions
+    // 3. Mark as translating
     translatingPagesRef.current.add(targetPage);
+    setIsTranslating(true);
+    setActiveTranslation({ page: targetPage, content: '', status: 'loading' });
 
-    // Safety check: translateCurrentPage uses the global canvasRef, 
-    // so it MUST only be used for the currently visible page.
-    if (targetPage !== currentPage) {
-      console.log(`[MediTrans] Hủy dịch trang ${targetPage} vì không còn là trang hiện tại.`);
+    // 4. Abort previous foreground task
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const { signal } = controller;
+
+    // 5. Render safety check
+    if (isRenderingRef.current) {
+      console.log(`[MediTrans] Đang render trang ${targetPage}, chờ một lát...`);
+      setTimeout(() => {
+        if (currentPageRef.current === targetPage) {
+          translatingPagesRef.current.delete(targetPage);
+          translateCurrentPage(targetPage, force);
+        }
+      }, 100);
+      return;
+    }
+    
+    // 6. API Key check
+    const hasKey = await translationService.current.hasApiKey();
+    if (!hasKey) {
+      setTranslations(prev => ({
+        ...prev,
+        [targetPage]: { content: 'Vui lòng cài đặt API Key.', status: 'error' }
+      }));
+      setActiveTranslation(null);
+      setIsTranslating(false);
       translatingPagesRef.current.delete(targetPage);
       return;
     }
 
-    // Abort any existing translation
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
-    const signal = abortControllerRef.current.signal;
-
-    // Set active translation for smooth streaming without re-rendering the whole list
-    setActiveTranslation({ page: targetPage, content: '', status: 'loading' });
-    setIsTranslating(true);
-
-    // If still rendering, we don't want to capture a half-rendered or old page
-    if (isRenderingRef.current) {
-      console.log(`[MediTrans] Đang render trang ${targetPage}, đợi giây lát...`);
-      // Retry after a very short delay
-      setTimeout(() => {
-        // Re-check if we are still on the same page before retrying
-        if (currentPageRef.current === targetPage) {
-          translateCurrentPage(targetPage, force);
-        }
-      }, 30);
-      return;
-    }
-    
-    // Check if we have an API key before starting
-    const hasKey = await translationService.current.hasApiKey();
-    if (!hasKey) {
-      if (fileIdRef.current === currentFileId) {
-        setTranslations(prev => ({
-          ...prev,
-          [targetPage]: { 
-            content: 'Thiếu API Key. Vui lòng nhập API Key trong phần Cài đặt hoặc chọn từ hệ thống.', 
-            status: 'error' 
-          }
-        }));
-        // Clear active translation on error
-        setActiveTranslation(null);
-        setIsTranslating(false);
-        translatingPagesRef.current.delete(targetPage);
-      }
-      return;
-    }
-
-    // Auto-switch to split view on mobile when starting translation so they see both
-    if (window.innerWidth < 768 && mobileViewMode === 'pdf') {
-      setMobileViewMode('split');
-      // Scroll to the bottom where the translation panel is
-      setTimeout(() => {
-        window.scrollTo({ top: window.innerHeight * 0.4, behavior: 'smooth' });
-      }, 50);
-    }
-
+    // 7. Capture
     try {
       const startTime = Date.now();
-      const currentFileId = fileIdRef.current;
-      console.log(`[MediTrans] Bắt đầu dịch trang ${targetPage}...`);
-
       const originalCanvas = canvasRef.current;
-      
       const MAX_DIMENSION = 1024; 
       let captureCanvas = originalCanvas;
       
@@ -2062,19 +2042,11 @@ export default function App() {
       }
 
       const imageBuffer = captureCanvas.toDataURL('image/jpeg', 0.65);
-
       if (!imageBuffer || imageBuffer.length < 1000) {
-        throw new Error("Không thể chụp ảnh trang PDF để dịch. Vui lòng thử lại.");
+        throw new Error("Không thể chụp ảnh trang.");
       }
 
-      console.log(`[MediTrans] Payload: ${Math.round(imageBuffer.length/1024)}KB. Đang gửi yêu cầu tới Gemini...`);
-
-      const stream = translationService.current.translateMedicalPageStream({
-        imageBuffer,
-        pageNumber: targetPage,
-        signal
-      });
-      
+      const stream = translationService.current.translateMedicalPageStream({ imageBuffer, pageNumber: targetPage, signal });
       let fullContent = "";
       let lastUpdateTime = Date.now();
 
@@ -2087,46 +2059,31 @@ export default function App() {
         }
       }
       
-      console.log(`[MediTrans] Hoàn thành dịch trang ${targetPage} trong ${Date.now() - startTime}ms`);
-      
-      setActiveTranslation({ page: targetPage, content: fullContent, status: 'success' });
-      
       const finalResult = { content: fullContent, status: 'success' as const };
       
-      // Only update if we are still on the same file
       if (fileIdRef.current === currentFileId) {
         setTranslations(prev => ({ ...prev, [targetPage]: finalResult }));
+        setActiveTranslation({ page: targetPage, content: fullContent, status: 'success' });
         
-        // Sync to Firestore if user is logged in
         if (user && fileId) {
-          console.log(`[MediTrans] Đang lưu bản dịch trang ${targetPage} lên Firestore...`);
-          const path = `users/${user.uid}/documents/${fileId}/pages/${targetPage}`;
-          try {
-            await setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
-              content: fullContent,
-              status: 'success',
-              updatedAt: serverTimestamp()
-            });
-            console.log(`[MediTrans] Đã lưu thành công trang ${targetPage} lên Firestore.`);
-          } catch (e) {
-            handleFirestoreError(e, OperationType.WRITE, path);
-          }
-        } else {
-          console.warn("[MediTrans] Không thể lưu lên Firestore: User hoặc FileId không khả dụng", { hasUser: !!user, fileId });
+          setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
+            content: fullContent, status: 'success', updatedAt: serverTimestamp()
+          }).catch(e => console.error("Firestore save error:", e));
         }
       }
-      setActiveTranslation(null);
-    } catch (error: any) {
-      if (error.message === "Translation aborted" || error.name === 'AbortError') {
-        console.log("Translation aborted by user");
-        return;
-      }
-      console.error("Translation Error:", error);
-      const errorMessage = error instanceof Error ? error.message : 'Dịch thuật thất bại.';
-      const errorResult = { content: errorMessage, status: 'error' as const };
       
+      // Delay clearing active translation to avoid visual jump
+      setTimeout(() => {
+        if (currentPageRef.current === targetPage) {
+          setActiveTranslation(null);
+        }
+      }, 300);
+
+    } catch (error: any) {
+      if (error.message === "Translation aborted" || error.name === 'AbortError') return;
+      console.error("Translation Error:", error);
       if (fileIdRef.current === currentFileId) {
-        setTranslations(prev => ({ ...prev, [targetPage]: errorResult }));
+        setTranslations(prev => ({ ...prev, [targetPage]: { content: error.message || 'Lỗi dịch thuật', status: 'error' } }));
       }
       setActiveTranslation(null);
     } finally {
@@ -2146,7 +2103,7 @@ export default function App() {
 
     // Avoid double translation
     const currentStatus = translationsRef.current[pageNum]?.status;
-    if (translatingPagesRef.current.has(pageNum) || (currentStatus === 'loading' || currentStatus === 'success')) {
+    if (translatingPagesRef.current.has(pageNum) || currentStatus === 'loading' || currentStatus === 'success') {
       return;
     }
 
@@ -2160,25 +2117,17 @@ export default function App() {
         return;
       }
 
-      // Use a fixed scale for pre-translation OCR to ensure consistency and quality
+      // 1. Render in background to image
       const viewport = page.getViewport({ scale: 2 }); 
-      
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const context = canvas.getContext('2d');
       
       if (context) {
-        const renderTask = page.render({
-          canvasContext: context,
-          viewport: viewport,
-        } as any);
-        
+        const renderTask = page.render({ canvasContext: context, viewport: viewport } as any);
         const abortHandler = () => renderTask.cancel();
-        if (signal) {
-          signal.addEventListener('abort', abortHandler);
-        }
-
+        if (signal) signal.addEventListener('abort', abortHandler);
         try {
           await renderTask.promise;
         } finally {
@@ -2192,58 +2141,31 @@ export default function App() {
         }
 
         const imageBuffer = canvas.toDataURL('image/jpeg', 0.8);
-        
-        // Final cleanup for pre-render canvas before AI call
-        canvas.width = 0;
-        canvas.height = 0;
+        canvas.width = 0; canvas.height = 0; // memory cleanup
 
+        // 2. Start translation stream
         const stream = translationService.current.translateMedicalPageStream({
-          imageBuffer,
-          pageNumber: pageNum,
-          signal
+          imageBuffer, pageNumber: pageNum, signal
         });
         
         let fullContent = "";
         let lastUpdateTime = Date.now();
-        let lastSaveTime = Date.now();
-        const UPDATE_INTERVAL = 150;
-        const SAVE_INTERVAL = 8000; // Pre-translation saves less frequently
 
         for await (const chunk of stream) {
           if (signal?.aborted) break;
           fullContent += chunk;
-          const now = Date.now();
           
-          // Update UI
-          if (now - lastUpdateTime > UPDATE_INTERVAL) {
-            // If the user has moved to this page while it was being pre-translated, show progress
-            if (pageNum === currentPageRef.current) {
-              setActiveTranslation({ page: pageNum, content: fullContent, status: 'loading' });
-              setIsTranslating(true);
-            }
+          const now = Date.now();
+          // If the user has moved to this page while it was being pre-translated, show progress
+          if (pageNum === currentPageRef.current && now - lastUpdateTime > 150) {
+            setActiveTranslation({ page: pageNum, content: fullContent, status: 'loading' });
+            setIsTranslating(true);
             lastUpdateTime = now;
-          }
-
-          // Periodic sync to Firestore
-          if (user && fileId && now - lastSaveTime > SAVE_INTERVAL && fullContent.length > 0) {
-            lastSaveTime = now;
-            const path = `users/${user.uid}/documents/${fileId}/pages/${pageNum}`;
-            setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', pageNum.toString()), {
-              content: fullContent,
-              status: 'loading',
-              updatedAt: serverTimestamp()
-            }, { merge: true }).catch(err => handleFirestoreError(err, OperationType.WRITE, path));
           }
         }
         
         if (signal?.aborted) return;
 
-        // Final update if it's the current page
-        if (pageNum === currentPageRef.current) {
-          setActiveTranslation({ page: pageNum, content: fullContent, status: 'loading' });
-          setIsTranslating(true);
-        }
-        
         const finalResult = { content: fullContent, status: 'success' as const };
         
         if (fileIdRef.current === currentFileId) {
@@ -2253,40 +2175,29 @@ export default function App() {
              return updated;
           });
           
-          // Sync to Firestore if user is logged in
+          // Show final results immediately if we are on this page
+          if (pageNum === currentPageRef.current) {
+            setActiveTranslation({ page: pageNum, content: fullContent, status: 'success' });
+            setIsTranslating(true);
+            setTimeout(() => {
+              if (currentPageRef.current === pageNum) setActiveTranslation(null);
+            }, 300);
+          }
+          
           if (user && fileId) {
-            const path = `users/${user.uid}/documents/${fileId}/pages/${pageNum}`;
-            try {
-              await setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', pageNum.toString()), {
-                content: fullContent,
-                status: 'success',
-                updatedAt: serverTimestamp()
-              });
-            } catch (e) {
-              handleFirestoreError(e, OperationType.WRITE, path);
-            }
+            setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', pageNum.toString()), {
+              content: fullContent, status: 'success', updatedAt: serverTimestamp()
+            }, { merge: true }).catch(e => console.error("Firestore pre-save error:", e));
           }
         }
-        
-        // Clear active translation if it was this page
-        if (pageNum === currentPageRef.current) {
-          setActiveTranslation(null);
-          setIsTranslating(false);
-        }
       }
-      
       page.cleanup();
     } catch (error: any) {
-      if (error.message === "Translation aborted" || error.name === 'AbortError') {
-        return;
-      }
+      if (error.message === "Translation aborted" || error.name === 'AbortError') return;
       console.error(`Pre-translation error for page ${pageNum}:`, error);
     } finally {
       translatingPagesRef.current.delete(pageNum);
-      // If it was the current page, reset global translating state
-      if (pageNum === currentPageRef.current) {
-        setIsTranslating(false);
-      }
+      if (pageNum === currentPageRef.current) setIsTranslating(false);
     }
   }, [pdfDoc, numPages, user, fileId, translationService]);
 
