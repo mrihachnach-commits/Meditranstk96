@@ -35,7 +35,7 @@ export class GeminiService implements TranslationService {
   }
 
   private getMIN_REQUEST_INTERVAL(): number {
-    return 4000;
+    return 1000;
   }
 
   private getBestAvailableKey(): string | null {
@@ -113,32 +113,24 @@ export class GeminiService implements TranslationService {
     }
   }
 
-  async *translateMedicalPageStream(options: TranslationOptions & { part?: 'top' | 'bottom' | 'full' }): AsyncGenerator<string> {
-    const { imageBuffer, pageNumber, signal, part = 'full' } = options;
+  async *translateMedicalPageStream(options: TranslationOptions): AsyncGenerator<string> {
+    const { imageBuffer, pageNumber, signal } = options;
     
     if (signal?.aborted) {
       throw new Error("Translation aborted");
     }
 
-    let partInstruction = "";
-    if (part === 'top') {
-      partInstruction = "TRỌNG TÂM: Chỉ dịch NỬA TRÊN của trang này (bao gồm tiêu đề, thông tin hành chính). Dừng lại khi hết các thông tin ở nửa trên trang.";
-    } else if (part === 'bottom') {
-      partInstruction = "TRỌNG TÂM: Chỉ dịch NỬA DƯỚI của trang này (bao gồm kết luận, chữ ký phía dưới). Bắt đầu từ các thông tin ở giữa trang trở xuống.";
-    }
-
     const systemInstruction = `BẠN LÀ MỘT CHUYÊN GIA DỊCH THUẬT Y KHOA OCR.
-NHIỆM VỤ: Trích xuất và dịch văn bản từ TRANG SỐ ${pageNumber} trong hình ảnh sang tiếng Việt.
-${partInstruction}
+NHIỆM VỤ: Trích xuất và dịch TOÀN BỘ văn bản từ TRANG SỐ ${pageNumber} trong hình ảnh sang tiếng Việt.
 
 YÊU CẦU QUAN TRỌNG:
 1. CHỈ DỊCH nội dung của trang này, không thêm nội dung từ các trang trước hoặc sau.
 2. Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách, tiêu đề).
 3. Sử dụng thuật ngữ y khoa chuyên môn chuẩn tiếng Việt. 
-4. KHÔNG THÊM lời dẫn hoặc kết luận của bạn.
+4. KHÔNG THÊM lời dẫn hoặc kết luận.
 5. Rút gọn chuỗi dấu chấm (.) dài thành tối đa 3-5 dấu.`;
 
-    const prompt = `Hãy dịch văn bản trong hình ảnh (Trang ${pageNumber}${part !== 'full' ? `, phần ${part}` : ''}) sang tiếng Việt.`;
+    const prompt = `Hãy dịch văn bản trong hình ảnh (Trang ${pageNumber}) sang tiếng Việt.`;
 
     const MAX_RETRIES = 5;
     let retryCount = 0;

@@ -527,7 +527,7 @@ export default function App() {
   const [showTranslationPanel, setShowTranslationPanel] = useState(false);
   const [mobileViewMode, setMobileViewMode] = useState<'pdf' | 'translation' | 'split'>('pdf');
   const [autoTranslate, setAutoTranslate] = useState(false);
-  const [autoTranslateLookAhead, setAutoTranslateLookAhead] = useState(2);
+  const [autoTranslateLookAhead, setAutoTranslateLookAhead] = useState(5); // Increased to 5 pages lookahead
   const [zoom, setZoom] = useState(0.82); // Default to 82% as requested
   const [isAutoFit, setIsAutoFit] = useState(true);
   
@@ -2026,122 +2026,50 @@ export default function App() {
     try {
       const startTime = Date.now();
       const originalCanvas = canvasRef.current;
-      const MAX_DIMENSION = 1024; 
+      const MAX_DIMENSION = 1200; 
       
-      // OPTIMIZATION for Page 1: Split into two parallel requests for speed
-      if (targetPage === 1 && !force) {
-        console.log("[MediTrans] Using Split Strategy for Page 1 speedup...");
-        
-        let resizedWidth = originalCanvas.width;
-        let resizedHeight = originalCanvas.height;
-        if (resizedWidth > MAX_DIMENSION || resizedHeight > MAX_DIMENSION) {
-          const ratio = Math.min(MAX_DIMENSION / resizedWidth, MAX_DIMENSION / resizedHeight);
-          resizedWidth *= ratio;
-          resizedHeight *= ratio;
+      let captureCanvas = originalCanvas;
+      if (originalCanvas.width > MAX_DIMENSION || originalCanvas.height > MAX_DIMENSION) {
+        const tempCanvas = document.createElement('canvas');
+        const ratio = Math.min(MAX_DIMENSION / originalCanvas.width, MAX_DIMENSION / originalCanvas.height);
+        tempCanvas.width = originalCanvas.width * ratio;
+        tempCanvas.height = originalCanvas.height * ratio;
+        const tempCtx = tempCanvas.getContext('2d');
+        if (tempCtx) {
+          tempCtx.drawImage(originalCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
+          captureCanvas = tempCanvas;
         }
+      }
 
-        const createPartBuffer = (yOffset: number, height: number) => {
-          const partCanvas = document.createElement('canvas');
-          partCanvas.width = resizedWidth;
-          partCanvas.height = height;
-          const ctx = partCanvas.getContext('2d');
-          if (ctx) {
-            const sourceY = (yOffset / resizedHeight) * originalCanvas.height;
-            const sourceH = (height / resizedHeight) * originalCanvas.height;
-            ctx.drawImage(originalCanvas, 0, sourceY, originalCanvas.width, sourceH, 0, 0, resizedWidth, height);
-          }
-          return partCanvas.toDataURL('image/jpeg', 0.65);
-        };
+      const imageBuffer = captureCanvas.toDataURL('image/jpeg', 0.7);
+      if (!imageBuffer || imageBuffer.length < 1000) {
+        throw new Error("Không thể chụp ảnh trang.");
+      }
 
-        const topBuffer = createPartBuffer(0, resizedHeight * 0.6);
-        const bottomBuffer = createPartBuffer(resizedHeight * 0.4, resizedHeight * 0.6);
+      const stream = translationService.current.translateMedicalPageStream({ imageBuffer, pageNumber: targetPage, signal });
+      let fullContent = "";
+      let lastUpdateTime = Date.now();
 
-        let topContent = "";
-        let bottomContent = "";
-        
-        const topStream = translationService.current.translateMedicalPageStream({ 
-          imageBuffer: topBuffer, pageNumber: targetPage, signal, part: 'top' 
-        });
-        const bottomStream = translationService.current.translateMedicalPageStream({ 
-          imageBuffer: bottomBuffer, pageNumber: targetPage, signal, part: 'bottom' 
-        });
-
-        const updateUI = () => {
-          const combined = topContent + (bottomContent ? "\n\n---\n\n" + bottomContent : "");
-          setActiveTranslation({ page: targetPage, content: combined, status: 'loading' });
-        };
-
-        await Promise.all([
-          (async () => {
-            for await (const chunk of topStream) {
-              topContent += chunk;
-              updateUI();
-            }
-          })(),
-          (async () => {
-            for await (const chunk of bottomStream) {
-              bottomContent += chunk;
-              updateUI();
-            }
-          })()
-        ]);
-
-        const fullContent = topContent + "\n\n---\n\n" + bottomContent;
-        const finalResult = { content: fullContent, status: 'success' as const };
-        
-        if (fileIdRef.current === currentFileId) {
-          setTranslations(prev => ({ ...prev, [targetPage]: finalResult }));
-          setActiveTranslation({ page: targetPage, content: fullContent, status: 'success' });
-          if (user && fileId) {
-            setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
-              content: fullContent, status: 'success', updatedAt: serverTimestamp()
-            }).catch(e => console.error("Firestore save error:", e));
-          }
+      for await (const chunk of stream) {
+        fullContent += chunk;
+        const now = Date.now();
+        if (now - lastUpdateTime > 80) {
+          setActiveTranslation({ page: targetPage, content: fullContent, status: 'loading' });
+          lastUpdateTime = now;
         }
-      } else {
-        // Standard Strategy for other pages
-        let captureCanvas = originalCanvas;
-        if (originalCanvas.width > MAX_DIMENSION || originalCanvas.height > MAX_DIMENSION) {
-          const tempCanvas = document.createElement('canvas');
-          const ratio = Math.min(MAX_DIMENSION / originalCanvas.width, MAX_DIMENSION / originalCanvas.height);
-          tempCanvas.width = originalCanvas.width * ratio;
-          tempCanvas.height = originalCanvas.height * ratio;
-          const tempCtx = tempCanvas.getContext('2d');
-          if (tempCtx) {
-            tempCtx.drawImage(originalCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
-            captureCanvas = tempCanvas;
-          }
-        }
-
-        const imageBuffer = captureCanvas.toDataURL('image/jpeg', 0.65);
-        if (!imageBuffer || imageBuffer.length < 1000) {
-          throw new Error("Không thể chụp ảnh trang.");
-        }
-
-        const stream = translationService.current.translateMedicalPageStream({ imageBuffer, pageNumber: targetPage, signal });
-        let fullContent = "";
-        let lastUpdateTime = Date.now();
-
-        for await (const chunk of stream) {
-          fullContent += chunk;
-          const now = Date.now();
-          if (now - lastUpdateTime > 100) {
-            setActiveTranslation({ page: targetPage, content: fullContent, status: 'loading' });
-            lastUpdateTime = now;
-          }
-        }
+      }
+      
+      console.log(`[MediTrans] Finished page ${targetPage} in ${Date.now() - startTime}ms`);
+      const finalResult = { content: fullContent, status: 'success' as const };
+      
+      if (fileIdRef.current === currentFileId) {
+        setTranslations(prev => ({ ...prev, [targetPage]: finalResult }));
+        setActiveTranslation({ page: targetPage, content: fullContent, status: 'success' });
         
-        const finalResult = { content: fullContent, status: 'success' as const };
-        
-        if (fileIdRef.current === currentFileId) {
-          setTranslations(prev => ({ ...prev, [targetPage]: finalResult }));
-          setActiveTranslation({ page: targetPage, content: fullContent, status: 'success' });
-          
-          if (user && fileId) {
-            setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
-              content: fullContent, status: 'success', updatedAt: serverTimestamp()
-            }).catch(e => console.error("Firestore save error:", e));
-          }
+        if (user && fileId) {
+          setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
+            content: fullContent, status: 'success', updatedAt: serverTimestamp()
+          }).catch(e => console.error("Firestore save error:", e));
         }
       }
       
@@ -2192,8 +2120,8 @@ export default function App() {
         return;
       }
 
-      // 1. Render in background to image
-      const viewport = page.getViewport({ scale: 2 }); 
+      // 1. Render in background to image - optimized scale for speed/accuracy balance
+      const viewport = page.getViewport({ scale: 1.5 }); 
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
@@ -2208,14 +2136,8 @@ export default function App() {
         } finally {
           if (signal) signal.removeEventListener('abort', abortHandler);
         }
-        
-        if (signal?.aborted) {
-          page.cleanup();
-          translatingPagesRef.current.delete(pageNum);
-          return;
-        }
 
-        const imageBuffer = canvas.toDataURL('image/jpeg', 0.8);
+        const imageBuffer = canvas.toDataURL('image/jpeg', 0.7);
         canvas.width = 0; canvas.height = 0; // memory cleanup
 
         // 2. Start translation stream
@@ -2459,7 +2381,7 @@ export default function App() {
       if (!isRenderingRef.current && !isDone && !isForegroundActive) {
         translateCurrentPage(currentPage);
       }
-    }, 600); // Slightly more responsive debounce
+    }, 300); // Very fast debounce for instant translation navigation
 
     return () => clearTimeout(timer);
   }, [currentPage, pdfDoc, autoTranslate, isRendering, isTranslating, translateCurrentPage, activeTranslation?.page]);
