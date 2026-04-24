@@ -17,7 +17,6 @@ export class GeminiService implements TranslationService {
       this.apiKeys = apiKeys.split(/[,\n]/).map(k => k.trim()).filter(k => k !== "");
     }
     
-    // Initialize lastUsed if not already in static map
     this.apiKeys.forEach(k => {
       if (!GeminiService.globalKeyLastUsed.has(k)) {
         GeminiService.globalKeyLastUsed.set(k, 0);
@@ -36,7 +35,7 @@ export class GeminiService implements TranslationService {
   }
 
   private getMIN_REQUEST_INTERVAL(): number {
-    return 4000; // Standard Gemini Free Tier limit (15 RPM -> 1 req / 4s)
+    return 4000;
   }
 
   private getBestAvailableKey(): string | null {
@@ -45,11 +44,9 @@ export class GeminiService implements TranslationService {
 
     if (availableKeys.length === 0) return null;
 
-    // Filter out exhausted keys
     const validKeys = availableKeys.filter(k => !this.exhaustedKeys.has(k));
     if (validKeys.length === 0) return null;
 
-    // Sort by global last usage to pick the most "rested" key
     validKeys.sort((a, b) => (GeminiService.globalKeyLastUsed.get(a) || 0) - (GeminiService.globalKeyLastUsed.get(b) || 0));
 
     return validKeys[0];
@@ -75,22 +72,18 @@ export class GeminiService implements TranslationService {
     const lastUsed = GeminiService.globalKeyLastUsed.get(key) || 0;
     const interval = this.getMIN_REQUEST_INTERVAL();
     
-    // If we've used this key recently, wait for the remainder of the interval
     if (now - lastUsed < interval) {
       const waitTime = interval - (now - lastUsed);
-      // Small optimization: If wait is very short, just proceed or use shorter delay
       if (waitTime > 50) {
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
     }
     
-    // Mark as used NOW
     GeminiService.globalKeyLastUsed.set(key, Date.now());
   }
 
   private rotateKey(exhaustedKey: string, isQuotaError: boolean = true): boolean {
     if (exhaustedKey) {
-      // If it's a quota error, block for 1 minute. Otherwise (e.g. 503) stay available but prioritized lower.
       const duration = isQuotaError ? 60000 : 2000;
       this.exhaustedKeys.add(exhaustedKey);
       setTimeout(() => this.exhaustedKeys.delete(exhaustedKey), duration);
@@ -107,13 +100,11 @@ export class GeminiService implements TranslationService {
     const envKey = this.systemKey;
     const manualKey = this.apiKeys[0]; 
     
-    const results = {
+    return {
       envKey: !!envKey,
       manualKey: !!manualKey,
       envKeyName: envKey ? "Hệ thống (Environment)" : undefined
     };
-
-    return results;
   }
 
   async openKeySelection(): Promise<void> {
@@ -122,25 +113,32 @@ export class GeminiService implements TranslationService {
     }
   }
 
-  async *translateMedicalPageStream(options: TranslationOptions): AsyncGenerator<string> {
-    const { imageBuffer, pageNumber, signal } = options;
+  async *translateMedicalPageStream(options: TranslationOptions & { part?: 'top' | 'bottom' | 'full' }): AsyncGenerator<string> {
+    const { imageBuffer, pageNumber, signal, part = 'full' } = options;
     
     if (signal?.aborted) {
       throw new Error("Translation aborted");
     }
 
+    let partInstruction = "";
+    if (part === 'top') {
+      partInstruction = "TRỌNG TÂM: Chỉ dịch NỬA TRÊN của trang này (bao gồm tiêu đề, thông tin hành chính). Dừng lại khi hết các thông tin ở nửa trên trang.";
+    } else if (part === 'bottom') {
+      partInstruction = "TRỌNG TÂM: Chỉ dịch NỬA DƯỚI của trang này (bao gồm kết luận, chữ ký phía dưới). Bắt đầu từ các thông tin ở giữa trang trở xuống.";
+    }
+
     const systemInstruction = `BẠN LÀ MỘT CHUYÊN GIA DỊCH THUẬT Y KHOA OCR.
-NHIỆM VỤ: Trích xuất và dịch TOÀN BỘ văn bản từ TRANG SỐ ${pageNumber} trong hình ảnh sang tiếng Việt.
+NHIỆM VỤ: Trích xuất và dịch văn bản từ TRANG SỐ ${pageNumber} trong hình ảnh sang tiếng Việt.
+${partInstruction}
 
 YÊU CẦU QUAN TRỌNG:
 1. CHỈ DỊCH nội dung của trang này, không thêm nội dung từ các trang trước hoặc sau.
 2. Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách, tiêu đề).
 3. Sử dụng thuật ngữ y khoa chuyên môn chuẩn tiếng Việt. 
-4. KHÔNG THÊM lời dẫn ("Đây là bản dịch...", "Trang tiếp theo...") hoặc kết luận.
-5. Rút gọn chuỗi dấu chấm (.) dài thành tối đa 3-5 dấu.
-6. Nếu thấy số trang trong ảnh, hãy đảm bảo nội dung khớp với trang đó.`;
+4. KHÔNG THÊM lời dẫn hoặc kết luận của bạn.
+5. Rút gọn chuỗi dấu chấm (.) dài thành tối đa 3-5 dấu.`;
 
-    const prompt = `Hãy dịch văn bản trong hình ảnh (Trang ${pageNumber}) sang tiếng Việt.`;
+    const prompt = `Hãy dịch văn bản trong hình ảnh (Trang ${pageNumber}${part !== 'full' ? `, phần ${part}` : ''}) sang tiếng Việt.`;
 
     const MAX_RETRIES = 5;
     let retryCount = 0;
@@ -212,21 +210,15 @@ YÊU CẦU QUAN TRỌNG:
         if ((isQuotaError || isUnavailableError) && retryCount < MAX_RETRIES) {
           const canRotate = this.rotateKey(key, isQuotaError);
           if (canRotate) {
-            const errorType = isQuotaError ? "Quota limited" : "High demand";
-            console.log(`[MediTrans] ${errorType}. Rotated to a different API Key. Retrying...`);
             retryCount++;
-            const baseDelay = isQuotaError ? 1000 : 500;
-            await new Promise(resolve => setTimeout(resolve, baseDelay + Math.random() * 500));
+            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 500));
             continue;
           }
-
           retryCount++;
           const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000;
-          console.warn(`All keys exhausted. Retrying in ${Math.round(delay)}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
-
         throw error;
       }
     }
@@ -234,19 +226,13 @@ YÊU CẦU QUAN TRỌNG:
 
   async translateMedicalPage(options: TranslationOptions): Promise<string> {
     const { imageBuffer, pageNumber, signal } = options;
-    
-    if (signal?.aborted) {
-      throw new Error("Translation aborted");
-    }
+    if (signal?.aborted) throw new Error("Translation aborted");
 
     const MAX_RETRIES = 5;
     let retryCount = 0;
 
     while (retryCount <= MAX_RETRIES) {
-      if (signal?.aborted) {
-        throw new Error("Translation aborted");
-      }
-      
+      if (signal?.aborted) throw new Error("Translation aborted");
       let ai, key;
       try {
         ({ ai, key } = await this.acquireKeyAndInstance());
@@ -254,58 +240,22 @@ YÊU CẦU QUAN TRỌNG:
         throw new Error("Không tìm thấy API Key khả dụng.");
       }
 
-      const systemInstruction = `BẠN LÀ MỘT CHUYÊN GIA DỊCH THUẬT Y KHOA OCR.
-NHIỆM VỤ: Trích xuất và dịch TOÀN BỘ văn bản từ TRANG SỐ ${pageNumber} trong hình ảnh sang tiếng Việt.
-
-YÊU CẦU QUAN TRỌNG:
-1. CHỈ DỊCH nội dung của trang này, không thêm nội dung từ các trang trước hoặc sau.
-2. Sử dụng Markdown, giữ nguyên cấu trúc (bảng, danh sách, tiêu đề).
-3. Sử dụng thuật ngữ y khoa chuyên môn chuẩn tiếng Việt. 
-4. KHÔNG THÊM lời dẫn ("Đây là bản dịch...", "Trang tiếp theo...") hoặc kết luận.
-5. Rút gọn chuỗi dấu chấm (.) dài thành tối đa 3-5 dấu.
-6. Nếu thấy số trang trong ảnh, hãy đảm bảo nội dung khớp với trang đó.`;
-
-      const prompt = `Hãy dịch văn bản trong hình ảnh (Trang ${pageNumber}) sang tiếng Việt.`;
+      const systemInstruction = `BẠN LÀ MỘT CHUYÊN GIA DỊCH THUẬT Y KHOA OCR. NHIỆM VỤ: Dịch Trang ${pageNumber} sang tiếng Việt.`;
+      const prompt = `Dịch hình ảnh Trang ${pageNumber} sang tiếng Việt.`;
 
       try {
         const response = await ai.models.generateContent({
           model: this.modelName,
-          contents: [
-            {
-              parts: [
-                { text: prompt },
-                {
-                  inlineData: {
-                    mimeType: "image/jpeg",
-                    data: imageBuffer.split(",")[1],
-                  },
-                },
-              ],
-            },
-          ],
-          config: {
-            systemInstruction: systemInstruction,
-            temperature: 0
-          }
+          contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: imageBuffer.split(",")[1] } }] }],
+          config: { systemInstruction, temperature: 0 }
         });
 
-        let text = response.text || "Model returned no text.";
-        text = text.replace(/\.{6,}/g, '.....');
-        return text;
+        let text = response.text || "";
+        return text.replace(/\.{6,}/g, '.....');
       } catch (error: any) {
-        if (signal?.aborted || error.message === "Translation aborted") {
-          throw new Error("Translation aborted");
-        }
-        const isQuotaError = error.message?.toLowerCase().includes("quota") || 
-                           error.message?.toLowerCase().includes("429") ||
-                           error.message?.toLowerCase().includes("resource_exhausted");
-        
-        if (isQuotaError && retryCount < MAX_RETRIES) {
-          const canRotate = this.rotateKey(key);
-          if (canRotate) {
-            retryCount++;
-            continue;
-          }
+        if (signal?.aborted) throw new Error("Translation aborted");
+        if (retryCount < MAX_RETRIES && this.rotateKey(key)) {
+          retryCount++; continue;
         }
         throw error;
       }
@@ -314,201 +264,83 @@ YÊU CẦU QUAN TRỌNG:
   }
 
   async lookupMedicalTerm(term: string): Promise<any> {
-    const systemInstruction = `Chuyên gia từ điển y khoa: Cung cấp định nghĩa, dịch nghĩa, đồng nghĩa cho thuật ngữ y khoa bằng tiếng Việt. Chính xác, chuyên sâu, không bịa đặt.`;
+    const systemInstruction = `Chuyên gia từ điển y khoa. Trả về JSON.`;
+    const prompt = `Tra cứu: "${term}"`;
 
-    const prompt = `Hãy tra cứu thuật ngữ y khoa sau: "${term}"`;
+    let ai, key;
+    try {
+      ({ ai, key } = await this.acquireKeyAndInstance());
+    } catch (e) {
+      throw new Error("Không tìm thấy API Key.");
+    }
 
-    const MAX_RETRIES = 2;
-    let retryCount = 0;
-
-    while (retryCount <= MAX_RETRIES) {
-      let ai, key;
-      try {
-        ({ ai, key } = await this.acquireKeyAndInstance());
-      } catch (e) {
-        throw new Error("Không tìm thấy API Key.");
-      }
-
-      try {
-        const response = await ai.models.generateContent({
-          model: this.modelName,
-          contents: [{ parts: [{ text: prompt }] }],
-          config: {
-            systemInstruction: systemInstruction,
-            temperature: 0,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                term: { type: Type.STRING, description: "BẮT BUỘC: Phải giống hệt với từ/cụm từ được tra cứu ở prompt" },
-                definition: { type: Type.STRING, description: "Định nghĩa chi tiết hoặc dịch nghĩa bằng tiếng Việt" },
-                synonyms: { 
-                  type: Type.ARRAY, 
-                  items: { type: Type.STRING },
-                  description: "Danh sách các từ đồng nghĩa hoặc tên gọi khác"
-                },
-                relatedTerms: { 
-                  type: Type.ARRAY, 
-                  items: { type: Type.STRING },
-                  description: "Các thuật ngữ y khoa liên quan mật thiết"
-                },
-                source: { type: Type.STRING, description: "Nguồn tham khảo uy tín" }
-              },
-              required: ["term", "definition", "synonyms", "relatedTerms"]
-            }
-          }
-        });
-
-        const text = response.text;
-        if (!text) throw new Error("Model returned no text.");
-        
-        const cleanJson = text.replace(/```json\n?|```/g, '').trim();
-        return JSON.parse(cleanJson);
-      } catch (error: any) {
-        const isQuotaError = error.message?.toLowerCase().includes("quota") || 
-                           error.message?.toLowerCase().includes("429") ||
-                           error.message?.toLowerCase().includes("resource_exhausted");
-        
-        if (isQuotaError && retryCount < MAX_RETRIES) {
-          const canRotate = this.rotateKey(key, true);
-          if (canRotate) {
-            retryCount++;
-            continue;
+    try {
+      const response = await ai.models.generateContent({
+        model: this.modelName,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          systemInstruction: systemInstruction,
+          temperature: 0,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              term: { type: Type.STRING },
+              definition: { type: Type.STRING },
+              synonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
+              relatedTerms: { type: Type.ARRAY, items: { type: Type.STRING } },
+              source: { type: Type.STRING }
+            },
+            required: ["term", "definition"]
           }
         }
-        throw error;
-      }
+      });
+      return JSON.parse(response.text.replace(/```json\n?|```/g, '').trim());
+    } catch (error: any) {
+      throw error;
     }
   }
 
   async performOCR(imageBuffer: string): Promise<string> {
     let ai, key;
     try {
-      ({ ai, key } = await this.acquireKeyAndInstance());
+       ({ ai, key } = await this.acquireKeyAndInstance());
     } catch (e) {
-      throw new Error("Không có API Key khả dụng.");
+       throw new Error("Không có API Key khả dụng.");
     }
 
-    const systemInstruction = `
-      Bạn là một chuyên gia OCR (Nhận diện ký tự quang học) y khoa.
-      Nhiệm vụ của bạn là trích xuất CHÍNH XÁC văn bản từ hình ảnh vùng được chọn.
-    `;
-
+    const systemInstruction = `OCR Y KHOA: Trích xuất văn bản chính xác.`;
     const prompt = "Hãy trích xuất văn bản từ hình ảnh này.";
 
     try {
       const response = await ai.models.generateContent({
         model: this.modelName,
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType: "image/jpeg",
-                  data: imageBuffer.split(",")[1],
-                },
-              },
-            ],
-          },
-        ],
-        config: {
-          systemInstruction: systemInstruction,
-          temperature: 0.1,
-          thinkingConfig: { 
-            thinkingLevel: this.modelName.includes("pro") ? ThinkingLevel.LOW : ThinkingLevel.MINIMAL 
-          },
-        }
+        contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: imageBuffer.split(",")[1] } }] }],
+        config: { systemInstruction, temperature: 0.1 }
       });
-
       return response.text?.trim() || "";
     } catch (error: any) {
-      console.error("Gemini OCR Error:", error);
-      throw new Error(`Lỗi OCR: ${error.message || "Không rõ nguyên nhân"}`);
+      throw error;
     }
   }
 
   async *summarizeContent(content: string, type: 'page' | 'document' | 'chapter', signal?: AbortSignal): AsyncGenerator<string> {
-    const typeLabels = {
-      page: "trang hiện tại",
-      document: "toàn bộ tài liệu",
-      chapter: "chương/phần này"
-    };
+    const systemInstruction = `BÁC SĨ CHUYÊN KHOA: Tóm tắt nội dung y khoa Markdown.`;
+    const prompt = `Tóm tắt (${type}):\n\n${content}`;
 
-    const MAX_RETRIES = 5;
-    let retryCount = 0;
+    let ai, key;
+    try { ({ ai, key } = await this.acquireKeyAndInstance()); } catch (e) { throw new Error("API Key error."); }
 
-    while (retryCount <= MAX_RETRIES) {
-      if (signal?.aborted) throw new Error("Summarization aborted");
-
-      let ai, key;
-      try {
-        ({ ai, key } = await this.acquireKeyAndInstance());
-      } catch (e) {
-        throw new Error("Không tìm thấy API Key.");
+    try {
+      const response = await ai.models.generateContentStream({
+        model: this.modelName,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: { systemInstruction, temperature: 0.2 }
+      });
+      for await (const chunk of response) {
+        if (signal?.aborted) throw new Error("Aborted");
+        if (chunk.text) yield chunk.text;
       }
-
-      const systemInstruction = `Bạn là một bác sĩ chuyên khoa cấp cao và nhà nghiên cứu y học uy tín.
-Nhiệm vụ: Phân tích và tóm tắt chi tiết nội dung y khoa để hỗ trợ cập nhật kiến thức chuyên môn cho nhân viên y tế.
-
-Yêu cầu bản tóm tắt phải CHI TIẾT, ĐẦY ĐỦ, CHUYÊN SÂU và bao quát các phương diện sau:
-1. Tổng quan & Bối cảnh: Tóm tắt mục đích chính của văn bản, tầm quan trọng của vấn đề y khoa được đề cập.
-2. Cơ chế bệnh sinh & Nguyên lý y học: Giải thích chi tiết các quá trình sinh lý bệnh hoặc nguyên lý khoa học cốt lõi.
-3. Chẩn đoán & Cận lâm sàng: Liệt kê chi tiết các triệu chứng then chốt, tiêu chuẩn chẩn đoán, phân độ lâm sàng và các xét nghiệm/cận lâm sàng quan trọng nhất.
-4. Phác đồ Điều trị & Quản lý: Chi tiết các biện pháp can thiệp, dược lý học (tên thuốc, cơ chế), quy trình thực hành và lưu ý đặc biệt.
-5. Những cập nhật & Điểm mới quan trọng: Nhấn mạnh các kiến thức mới, thay đổi trong Evidence-Based Medicine (Y học dựa trên bằng chứng) hoặc các thay đổi trong Guideline quốc tế.
-6. Kết luận & Ứng dụng thực hành: Các thông điệp then chốt cần ghi nhớ và cách áp dụng trực tiếp vào thực hành lâm sàng.
-
-Phong cách trình bày:
-- Sử dụng Markdown chuyên nghiệp (Tiêu đề H2, H3, Danh sách có thứ tự).
-- In đậm (**bold**) các thuật ngữ y khoa, tên thuốc, chỉ số labo và các kiến thức quan trọng.
-- Ngôn ngữ: Tiếng Việt y khoa chuyên sâu, trang trọng, chính xác tuyệt đối.
-- Nếu có dữ liệu so sánh, hãy trình bày dưới dạng bảng (Markdown Tables).`;
-
-      const prompt = `Hãy tóm tắt nội dung sau đây (${typeLabels[type]}):
-
-${content}`;
-
-      try {
-        const response = await ai.models.generateContentStream({
-          model: this.modelName,
-          contents: [{ parts: [{ text: prompt }] }],
-          config: {
-            systemInstruction: systemInstruction,
-            temperature: 0.2
-          }
-        });
-
-        let hasData = false;
-        for await (const chunk of response) {
-          if (signal?.aborted) throw new Error("Summarization aborted");
-          const chunkText = chunk.text;
-          if (chunkText) {
-            hasData = true;
-            yield chunkText;
-          }
-        }
-
-        if (hasData) break;
-        else throw new Error("No data returned from summary stream");
-
-      } catch (error: any) {
-        if (signal?.aborted) throw new Error("Summarization aborted");
-        
-        const isQuotaError = error.message?.toLowerCase().includes("quota") || 
-                            error.message?.toLowerCase().includes("429") ||
-                            error.message?.toLowerCase().includes("resource_exhausted");
-        
-        if (isQuotaError && retryCount < MAX_RETRIES) {
-          const rotated = this.rotateKey(key, true);
-          if (rotated) {
-            retryCount++;
-            continue;
-          }
-        }
-
-        throw error;
-      }
-    }
+    } catch (error: any) { throw error; }
   }
 }

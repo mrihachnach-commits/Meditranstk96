@@ -3,6 +3,7 @@ export interface TranslationOptions {
   textContent?: string;
   pageNumber: number;
   signal?: AbortSignal;
+  part?: 'top' | 'bottom' | 'full';
 }
 
 export interface TranslationService {
