@@ -201,8 +201,11 @@ YÊU CẦU QUAN TRỌNG:
         const isPermissionDeniedError = error.message?.toLowerCase().includes("permission_denied") || 
                                        error.message?.toLowerCase().includes("403") ||
                                        error.message?.toLowerCase().includes("denied access");
+        const isNetworkError = error.message?.includes("status code: 0") || 
+                              error.message?.includes("code: 0") ||
+                              error.message?.toLowerCase().includes("fetch failed");
         
-        if ((isQuotaError || isUnavailableError || isPermissionDeniedError) && retryCount < MAX_RETRIES) {
+        if ((isQuotaError || isUnavailableError || isPermissionDeniedError || isNetworkError) && retryCount < MAX_RETRIES) {
           const canRotate = this.rotateKey(key, isQuotaError || isPermissionDeniedError);
           if (canRotate) {
             retryCount++;
@@ -256,8 +259,11 @@ YÊU CẦU QUAN TRỌNG:
         const isQuotaError = error.message?.toLowerCase().includes("quota") || 
                            error.message?.toLowerCase().includes("429") ||
                            error.message?.toLowerCase().includes("resource_exhausted");
+        const isNetworkError = error.message?.includes("status code: 0") || 
+                              error.message?.includes("code: 0") ||
+                              error.message?.toLowerCase().includes("fetch failed");
 
-        if (retryCount < MAX_RETRIES && this.rotateKey(key, isQuotaError || isPermissionDeniedError)) {
+        if (retryCount < MAX_RETRIES && this.rotateKey(key, isQuotaError || isPermissionDeniedError || isNetworkError)) {
           retryCount++; continue;
         }
         throw error;

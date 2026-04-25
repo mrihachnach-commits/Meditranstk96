@@ -182,6 +182,10 @@ function formatErrorMessage(error: any): string {
   if (message.includes('503') || message.toLowerCase().includes('unavailable')) {
     return 'Lỗi 503: Dịch vụ đang quá tải. Vui lòng thử lại sau vài giây.';
   }
+
+  if (message.includes('code: 0') || message.includes('status code: 0') || message.toLowerCase().includes('fetch failed')) {
+    return 'Lỗi kết nối (Network Error): Không thể kết nối tới máy chủ AI hoặc bị chặn bởi trình duyệt/CORS. Vui lòng kiểm tra lại mạng hoặc tắt VPN/Extension chặn quảng cáo.';
+  }
   
   try {
     const parsed = JSON.parse(message);
