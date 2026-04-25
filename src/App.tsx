@@ -495,7 +495,7 @@ export default function App() {
             type: fileToUpload.type,
             createdAt: serverTimestamp()
           });
-        } catch (error) {
+        } catch (error: any) {
           handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/documents`);
         }
 
@@ -669,7 +669,7 @@ export default function App() {
               lastUsed: serverTimestamp(),
               status: isActive ? 'active' : 'error'
             });
-          } catch (e) {
+          } catch (e: any) {
             handleFirestoreError(e, OperationType.UPDATE, `apiKeys/${vKey.id}`);
           }
           
@@ -756,8 +756,8 @@ export default function App() {
                 role: isAdminEmail ? 'admin' : 'user',
                 isBlocked: false
               }, { merge: true });
-            } catch (writeError) {
-              console.warn("Failed to create user doc:", writeError);
+            } catch (writeError: any) {
+              handleFirestoreError(writeError, OperationType.CREATE, `users/${currentUser.uid}`);
             }
             setUserRole(isAdminEmail ? 'admin' : 'user');
           } else {
@@ -778,8 +778,8 @@ export default function App() {
             if (isAdminEmail && currentRole !== 'admin') {
               try {
                 await updateDoc(userRef, { role: 'admin' });
-              } catch (updateError) {
-                console.warn("Failed to update admin role in DB:", updateError);
+              } catch (updateError: any) {
+                handleFirestoreError(updateError, OperationType.UPDATE, `users/${currentUser.uid}`);
               }
               setUserRole('admin');
             } else {
@@ -1071,9 +1071,8 @@ export default function App() {
             });
             
             console.log("Client-side DB write successful");
-          } catch (clientDbError) {
-            console.error("Client-side DB write also failed:", clientDbError);
-            // Don't throw here, the user is already created in Auth
+          } catch (clientDbError: any) {
+            handleFirestoreError(clientDbError, OperationType.CREATE, `users/${data.uid}`);
           }
         }
         
@@ -1112,7 +1111,7 @@ export default function App() {
       await fetchAllUsers();
     } catch (error: any) {
       console.error("Error toggling block status:", error);
-      showToast("Lỗi khi cập nhật trạng thái tài khoản", 'error');
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
     }
   };
 
@@ -1174,7 +1173,7 @@ export default function App() {
       await fetchAllUsers();
     } catch (error: any) {
       console.error("Error updating role:", error);
-      showToast("Lỗi khi cập nhật vai trò", 'error');
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
     }
   };
 
@@ -1363,11 +1362,7 @@ export default function App() {
         clearFile();
       } catch (error: any) {
         console.error("Lỗi khi xóa tài liệu:", error);
-        if (error.message?.includes('permission-denied') || error.message?.includes('PERMISSION_DENIED')) {
-          showToast("Bạn không có quyền xóa tài liệu này.", 'error');
-        } else {
-          showToast("Không thể xóa tài liệu. Vui lòng thử lại sau.", 'error');
-        }
+        handleFirestoreError(error, OperationType.DELETE, `users/${userId}/documents/${fileId}`);
       }
     }
   };
@@ -2110,7 +2105,7 @@ export default function App() {
         if (user && fileId) {
           setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
             content: fullContent, status: 'success', updatedAt: serverTimestamp()
-          }).catch(e => console.error("Firestore save error:", e));
+          }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/documents/${fileId}/pages/${targetPage}`));
         }
       }
       
@@ -2227,7 +2222,7 @@ export default function App() {
           if (user && fileId) {
             setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', pageNum.toString()), {
               content: fullContent, status: 'success', updatedAt: serverTimestamp()
-            }, { merge: true }).catch(e => console.error("Firestore pre-save error:", e));
+            }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/documents/${fileId}/pages/${pageNum}`));
           }
         }
       }

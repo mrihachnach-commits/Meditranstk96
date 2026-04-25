@@ -98,11 +98,11 @@ service cloud.firestore {
       return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'role', 'updatedAt', 'isBlocked']) &&
              data.uid is string && data.uid.size() > 0 &&
              data.email is string && isValidEmail(data.email) &&
-             (data.displayName == null || (data.displayName is string && data.displayName.size() < 100)) &&
-             (data.photoURL == null || (data.photoURL is string && isValidUrl(data.photoURL))) &&
-             (data.createdAt == null || data.createdAt is timestamp) &&
-             (data.updatedAt == null || data.updatedAt is timestamp) &&
-             (!('isBlocked' in data) || data.isBlocked is bool);
+             (data.get('displayName', null) == null || (data.displayName is string && data.displayName.size() < 100)) &&
+             (data.get('photoURL', null) == null || (data.photoURL is string && isValidUrl(data.photoURL))) &&
+             (data.get('createdAt', null) == null || data.createdAt is timestamp) &&
+             (data.get('updatedAt', null) == null || data.updatedAt is timestamp) &&
+             (data.get('isBlocked', null) == null || data.isBlocked is bool);
     }
 
     function isValidApiKey(data) {
@@ -124,8 +124,8 @@ service cloud.firestore {
     function isValidSummary(data) {
       return hasOnlyAllowedFields(['content', 'type', 'range', 'createdAt']) &&
              data.content is string && data.content.size() < 1000000 &&
-             data.type in ['page', 'chapter', 'document'] &&
-             (data.range == null || data.range is string) &&
+             data.type in ['page', 'chapter', 'document', 'range'] &&
+             (data.get('range', null) == null || data.range is string) &&
              data.createdAt is timestamp;
     }
 
@@ -137,7 +137,7 @@ service cloud.firestore {
       allow list: if isAdmin();
       match /{userId} {
         allow read: if isOwner(userId) || isAdmin();
-        allow create: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidUser(request.resource.data);
         allow update: if (isOwner(userId) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)) || isAdmin();
         allow delete: if isAdmin();
       }
