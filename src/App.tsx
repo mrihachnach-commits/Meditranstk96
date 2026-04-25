@@ -2243,21 +2243,32 @@ export default function App() {
   useEffect(() => {
     if (pdfDoc && autoTranslate) {
       // Find all pages in the look-ahead window that need translation
-      const pagesToBuffer = [];
-      for (let i = 1; i <= autoTranslateLookAhead; i++) {
+      // Instead of just a fixed window, we look for the NEXT 'autoTranslateLookAhead' pages that are not done.
+      const pagesToBuffer: number[] = [];
+      const currentTranslatingCount = translatingPagesRef.current.size;
+      const spaceInPipeline = Math.max(0, autoTranslateLookAhead - currentTranslatingCount);
+      
+      if (spaceInPipeline <= 0) return;
+
+      // Scan up to 50 pages ahead to find candidates that need translation
+      // to maintain a full pipeline even if some subsequent pages are already cached.
+      for (let i = 1; i <= Math.min(numPages - currentPage, 50); i++) {
         const pageNum = currentPage + i;
-        if (pageNum <= numPages && 
-            !translationsRef.current[pageNum] && 
-            !translatingPagesRef.current.has(pageNum)) {
+        const state = translationsRef.current[pageNum];
+        const isDone = state?.status === 'success';
+        const isTranslating = translatingPagesRef.current.has(pageNum);
+
+        if (!isDone && !isTranslating) {
           pagesToBuffer.push(pageNum);
+          if (pagesToBuffer.length >= spaceInPipeline) break;
         }
       }
 
       if (pagesToBuffer.length === 0) return;
 
-      // Limit concurrent translations to avoid browser/network congestion, 
-      // even if we have many keys. 6 is a good balance to allow 1 current + 5 lookahead.
-      const MAX_CONCURRENT_PRE_TRANSLATION = 6;
+      // Limit concurrent translations to avoid browser/network congestion.
+      // We allow space for the current page + the lookahead pool.
+      const MAX_CONCURRENT_PRE_TRANSLATION = autoTranslateLookAhead + 1;
       const currentConcurrency = translatingPagesRef.current.size;
       const spaceLeft = MAX_CONCURRENT_PRE_TRANSLATION - currentConcurrency;
 
