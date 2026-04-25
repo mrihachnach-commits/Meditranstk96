@@ -156,6 +156,43 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function formatErrorMessage(error: any): string {
+  if (!error) return 'Lỗi không xác định';
+  if (typeof error === 'string') {
+    try {
+      const parsed = JSON.parse(error);
+      if (parsed.error && parsed.error.message) {
+        return formatErrorMessage(parsed.error.message);
+      }
+    } catch (e) {
+      return error;
+    }
+  }
+  
+  const message = error.message || String(error);
+  
+  if (message.includes('403') || message.toLowerCase().includes('permission_denied') || message.toLowerCase().includes('denied access')) {
+    return 'Lỗi 403: API Key hoặc Project bị từ chối truy cập. Vui lòng kiểm tra lại Key hoặc Project trong Google AI Studio.';
+  }
+  
+  if (message.includes('429') || message.toLowerCase().includes('quota') || message.toLowerCase().includes('resource_exhausted')) {
+    return 'Lỗi 429: Hết hạn mức (Quota). Vui lòng thử lại sau hoặc đổi API Key khác.';
+  }
+
+  if (message.includes('503') || message.toLowerCase().includes('unavailable')) {
+    return 'Lỗi 503: Dịch vụ đang quá tải. Vui lòng thử lại sau vài giây.';
+  }
+  
+  try {
+    const parsed = JSON.parse(message);
+    if (parsed.error && parsed.error.message) {
+      return formatErrorMessage(parsed.error.message);
+    }
+  } catch (e) {}
+
+  return message;
+}
+
 interface TranslationState {
   [page: number]: {
     content: string;
@@ -1409,9 +1446,9 @@ export default function App() {
         setSummaryText(fullSummary);
       }
     } catch (error: any) {
-      if (error.message !== "Summarization aborted") {
+      if (error.message !== "Summarization aborted" && error.message !== "Aborted") {
         console.error("Summarization error:", error);
-        showToast(`Lỗi tóm tắt: ${error.message}`, 'error');
+        showToast(`Lỗi tóm tắt: ${formatErrorMessage(error)}`, 'error');
       }
     } finally {
       setIsSummarizing(false);
@@ -2086,7 +2123,7 @@ export default function App() {
       if (error.message === "Translation aborted" || error.name === 'AbortError') return;
       console.error("Translation Error:", error);
       if (fileIdRef.current === currentFileId) {
-        setTranslations(prev => ({ ...prev, [targetPage]: { content: error.message || 'Lỗi dịch thuật', status: 'error' } }));
+        setTranslations(prev => ({ ...prev, [targetPage]: { content: formatErrorMessage(error), status: 'error' } }));
       }
       setActiveTranslation(null);
     } finally {
@@ -2194,6 +2231,9 @@ export default function App() {
     } catch (error: any) {
       if (error.message === "Translation aborted" || error.name === 'AbortError') return;
       console.error(`Pre-translation error for page ${pageNum}:`, error);
+      if (fileIdRef.current === currentFileId) {
+        setTranslations(prev => ({ ...prev, [pageNum]: { content: formatErrorMessage(error), status: 'error' } }));
+      }
     } finally {
       translatingPagesRef.current.delete(pageNum);
       if (pageNum === currentPageRef.current) setIsTranslating(false);

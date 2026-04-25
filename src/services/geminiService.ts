@@ -198,9 +198,12 @@ YÊU CẦU QUAN TRỌNG:
         const isUnavailableError = error.message?.toLowerCase().includes("unavailable") || 
                                  error.message?.toLowerCase().includes("503") ||
                                  error.message?.toLowerCase().includes("high demand");
+        const isPermissionDeniedError = error.message?.toLowerCase().includes("permission_denied") || 
+                                       error.message?.toLowerCase().includes("403") ||
+                                       error.message?.toLowerCase().includes("denied access");
         
-        if ((isQuotaError || isUnavailableError) && retryCount < MAX_RETRIES) {
-          const canRotate = this.rotateKey(key, isQuotaError);
+        if ((isQuotaError || isUnavailableError || isPermissionDeniedError) && retryCount < MAX_RETRIES) {
+          const canRotate = this.rotateKey(key, isQuotaError || isPermissionDeniedError);
           if (canRotate) {
             retryCount++;
             await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 500));
@@ -246,7 +249,15 @@ YÊU CẦU QUAN TRỌNG:
         return text.replace(/\.{6,}/g, '.....');
       } catch (error: any) {
         if (signal?.aborted) throw new Error("Translation aborted");
-        if (retryCount < MAX_RETRIES && this.rotateKey(key)) {
+        
+        const isPermissionDeniedError = error.message?.toLowerCase().includes("permission_denied") || 
+                                       error.message?.toLowerCase().includes("403") ||
+                                       error.message?.toLowerCase().includes("denied access");
+        const isQuotaError = error.message?.toLowerCase().includes("quota") || 
+                           error.message?.toLowerCase().includes("429") ||
+                           error.message?.toLowerCase().includes("resource_exhausted");
+
+        if (retryCount < MAX_RETRIES && this.rotateKey(key, isQuotaError || isPermissionDeniedError)) {
           retryCount++; continue;
         }
         throw error;
