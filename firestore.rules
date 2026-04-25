@@ -90,6 +90,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    function isSharedWithMe(data) {
+      return isAuthenticated() && request.auth.token.email != null && 
+             data.get('sharedWith', []).hasAny([request.auth.token.email]);
+    }
+
     // ===============================================================
     // Domain Validators
     // ===============================================================
@@ -106,12 +111,21 @@ service cloud.firestore {
     }
 
     function isValidApiKey(data) {
-      return hasOnlyAllowedFields(['ownerId', 'name', 'value', 'engine', 'createdAt', 'lastUsed', 'status']) &&
+      return hasOnlyAllowedFields(['ownerId', 'sharedWith', 'name', 'value', 'engine', 'createdAt', 'lastUsed', 'status']) &&
              data.ownerId is string && data.ownerId == request.auth.uid &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.value is string && data.value.size() > 0 && data.value.size() < 500 &&
              data.engine in ['gemini', 'openai', 'anthropic'] &&
+             (!('sharedWith' in data) || data.sharedWith is list) &&
              (!('status' in data) || data.status in ['active', 'error']);
+    }
+
+    function isValidDocument(data) {
+       return hasOnlyAllowedFields(['name', 'folderId', 'ownerId', 'sharedWith', 'token', 'downloadUrl', 'size', 'type', 'createdAt']) &&
+              data.name is string && data.name.size() > 0 &&
+              data.token is string &&
+              data.downloadUrl is string &&
+              (!('sharedWith' in data) || data.sharedWith is list);
     }
 
     function isValidTranslation(data) {
@@ -152,7 +166,7 @@ service cloud.firestore {
     }
 
     match /apiKeys/{keyId} {
-      allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || isSharedWithMe(resource.data) || isAdmin());
       allow create: if isAuthenticated() && isValidApiKey(request.resource.data);
       allow update: if isAuthenticated() && isDocOwner() && isValidApiKey(request.resource.data);
       allow delete: if isAuthenticated() && (isDocOwner() || isAdmin());
@@ -163,17 +177,23 @@ service cloud.firestore {
     }
 
     match /users/{userId}/documents/{docId} {
-      allow read, write: if isOwner(userId) || isAdmin();
+      allow read: if isOwner(userId) || isSharedWithMe(resource.data) || isAdmin();
+      allow write: if (isOwner(userId) || isAdmin()) && isValidDocument(request.resource.data);
       
       match /pages/{pageNum} {
-        allow read: if isOwner(userId) || isAdmin();
-        allow write: if (isOwner(userId) || isAdmin()) && isValidTranslation(request.resource.data);
+        allow read: if isOwner(userId) || isSharedWithMe(get(/databases/$(database)/documents/users/$(userId)/documents/$(docId)).data) || isAdmin();
+        allow write: if (isOwner(userId) || isSharedWithMe(get(/databases/$(database)/documents/users/$(userId)/documents/$(docId)).data) || isAdmin()) && isValidTranslation(request.resource.data);
       }
 
       match /summaries/{summaryId} {
-        allow read: if isOwner(userId) || isAdmin();
-        allow write: if (isOwner(userId) || isAdmin()) && isValidSummary(request.resource.data);
+        allow read: if isOwner(userId) || isSharedWithMe(get(/databases/$(database)/documents/users/$(userId)/documents/$(docId)).data) || isAdmin();
+        allow write: if (isOwner(userId) || isSharedWithMe(get(/databases/$(database)/documents/users/$(userId)/documents/$(docId)).data) || isAdmin()) && isValidSummary(request.resource.data);
       }
+    }
+
+    // Explicitly allow collection group queries for shared documents
+    match /{path=**}/documents/{docId} {
+      allow list: if isSharedWithMe(resource.data) || isAdmin();
     }
   }
 }

@@ -20,7 +20,9 @@ import {
   SortAsc,
   SortDesc,
   Clock,
-  Type
+  Type,
+  Share2,
+  Users
 } from 'lucide-react';
 import { 
   db, 
@@ -38,7 +40,8 @@ import {
   serverTimestamp,
   auth,
   OperationType,
-  handleFirestoreError
+  handleFirestoreError,
+  collectionGroup
 } from '../firebase';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -54,6 +57,8 @@ export interface FileData {
   id: string;
   name: string;
   folderId: string | null;
+  ownerId?: string;
+  sharedWith?: string[];
   token: string;
   downloadUrl: string;
   size: number;
@@ -69,6 +74,7 @@ interface FileExplorerProps {
 
 export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUploadStart, onLocalFileOpen }) => {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'my' | 'shared'>('my');
   const [folders, setFolders] = useState<FolderData[]>([]);
   const [files, setFiles] = useState<FileData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,6 +87,9 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
   const [renameValue, setRenameValue] = useState('');
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<{id: string, type: 'file' | 'folder', name: string} | null>(null);
+  const [showShareModal, setShowShareModal] = useState<{id: string, type: 'file', name: string} | null>(null);
+  const [shareEmail, setShareEmail] = useState('');
+  const [isSharing, setIsSharing] = useState(false);
   
   const [showMoveModal, setShowMoveModal] = useState<{id: string, type: 'file' | 'folder'} | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -94,37 +103,63 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
 
   useEffect(() => {
     if (!user) return;
+    setLoading(true);
 
-    const foldersQuery = query(
-      collection(db, `users/${user.uid}/folders`),
-      where('parentId', '==', currentFolderId)
-    );
+    if (viewMode === 'my') {
+      const foldersQuery = query(
+        collection(db, `users/${user.uid}/folders`),
+        where('parentId', '==', currentFolderId)
+      );
 
-    const filesQuery = query(
-      collection(db, `users/${user.uid}/documents`),
-      where('folderId', '==', currentFolderId)
-    );
+      const filesQuery = query(
+        collection(db, `users/${user.uid}/documents`),
+        where('folderId', '==', currentFolderId)
+      );
 
-    const unsubscribeFolders = onSnapshot(foldersQuery, (snapshot) => {
-      const folderList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FolderData));
-      setFolders(folderList);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `users/${user.uid}/folders`);
-    });
+      const unsubscribeFolders = onSnapshot(foldersQuery, (snapshot) => {
+        const folderList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FolderData));
+        setFolders(folderList);
+        setLoading(false);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, `users/${user.uid}/folders`);
+      });
 
-    const unsubscribeFiles = onSnapshot(filesQuery, (snapshot) => {
-      const fileList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FileData));
-      setFiles(fileList);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `users/${user.uid}/documents`);
-    });
+      const unsubscribeFiles = onSnapshot(filesQuery, (snapshot) => {
+        const fileList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FileData));
+        setFiles(fileList);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, `users/${user.uid}/documents`);
+      });
 
-    return () => {
-      unsubscribeFolders();
-      unsubscribeFiles();
-    };
-  }, [user, currentFolderId]);
+      return () => {
+        unsubscribeFolders();
+        unsubscribeFiles();
+      };
+    } else {
+      // Shared mode - use collectionGroup to find files shared with this user's email
+      setFolders([]); // We don't support sharing folders yet for simplicity
+      const q = query(
+        collectionGroup(db, 'documents'),
+        where('sharedWith', 'array-contains', user.email)
+      );
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const fileList = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return { id: doc.id, ...data } as FileData;
+        });
+        setFiles(fileList);
+        setLoading(false);
+      }, (error) => {
+        console.error("Error fetching shared files:", error);
+        setLoading(false);
+        // collectionGroup might need an index which user needs to create, 
+        // but it will fail fast if index is missing.
+      });
+
+      return unsubscribe;
+    }
+  }, [user, currentFolderId, viewMode]);
 
   // Reset opening state if folders change (e.g. navigation)
   useEffect(() => {
@@ -210,6 +245,31 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
     }
   };
 
+  const handleShare = async () => {
+    if (!user || !showShareModal || !shareEmail.trim()) return;
+    setIsSharing(true);
+    try {
+      const docRef = doc(db, `users/${user.uid}/documents`, showShareModal.id);
+      
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const data = snap.data();
+        const currentSharedWith = data.sharedWith || [];
+        if (!currentSharedWith.includes(shareEmail.trim())) {
+          await updateDoc(docRef, {
+            sharedWith: [...currentSharedWith, shareEmail.trim()]
+          });
+        }
+      }
+      setShareEmail('');
+      setShowShareModal(null);
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}/documents/${showShareModal.id}`);
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
   const navigateToFolder = async (folderId: string | null, folderName: string) => {
     if (folderId === null) {
       setPath([{id: null, name: 'Root'}]);
@@ -276,19 +336,43 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
           </div>
           <div>
             <h2 className="text-xl font-display font-bold text-slate-800">Quản lý tài liệu</h2>
-            <div className="flex items-center gap-1 mt-0.5">
-              {path.map((p, i) => (
-                <React.Fragment key={p.id || 'root'}>
-                  <button 
-                    onClick={() => navigateToFolder(p.id, p.name)}
-                    className="text-[10px] font-bold text-slate-400 hover:text-indigo-600 transition-colors uppercase tracking-widest"
-                  >
-                    {p.name}
-                  </button>
-                  {i < path.length - 1 && <ChevronRight className="w-3 h-3 text-slate-300" />}
-                </React.Fragment>
-              ))}
+            <div className="flex bg-slate-50 p-1 rounded-xl border border-slate-100 mt-2">
+              <button 
+                onClick={() => { setViewMode('my'); setCurrentFolderId(null); setPath([{id: null, name: 'Root'}]); }}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2",
+                  viewMode === 'my' ? "bg-white shadow-sm text-indigo-600" : "text-slate-400 hover:text-slate-600"
+                )}
+              >
+                <Home className="w-3.5 h-3.5" />
+                Của tôi
+              </button>
+              <button 
+                onClick={() => { setViewMode('shared'); setCurrentFolderId(null); setPath([{id: 'shared', name: 'Được chia sẻ'}]); }}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2",
+                  viewMode === 'shared' ? "bg-white shadow-sm text-indigo-600" : "text-slate-400 hover:text-slate-600"
+                )}
+              >
+                <Users className="w-3.5 h-3.5" />
+                Được chia sẻ
+              </button>
             </div>
+            {viewMode === 'my' && (
+              <div className="flex items-center gap-1 mt-2">
+                {path.map((p, i) => (
+                  <React.Fragment key={p.id || 'root'}>
+                    <button 
+                      onClick={() => navigateToFolder(p.id, p.name)}
+                      className="text-[10px] font-bold text-slate-400 hover:text-indigo-600 transition-colors uppercase tracking-widest"
+                    >
+                      {p.name}
+                    </button>
+                    {i < path.length - 1 && <ChevronRight className="w-3 h-3 text-slate-300" />}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -515,6 +599,19 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
                     >
                       <Download className="w-3.5 h-3.5" />
                     </button>
+                    {viewMode === 'my' && (
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowShareModal({ id: file.id, type: 'file', name: file.name });
+                          setActiveMenuId(null);
+                        }}
+                        className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                        title="Chia sẻ"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <button 
                       onClick={(e) => {
                         e.stopPropagation();
@@ -689,6 +786,66 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
                   className="flex-1 px-6 py-3 rounded-xl text-sm font-bold bg-rose-500 text-white hover:bg-rose-600 transition-all shadow-lg shadow-rose-100"
                 >
                   Xóa ngay
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Share Modal */}
+      <AnimatePresence>
+        {showShareModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowShareModal(null)}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden p-8"
+            >
+              <div className="bg-indigo-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 mx-auto">
+                <Share2 className="w-8 h-8 text-indigo-500" />
+              </div>
+              <h3 className="text-xl font-display font-bold text-slate-800 mb-2 text-center">Chia sẻ tài liệu</h3>
+              <p className="text-slate-500 text-sm text-center mb-6">
+                Chia sẻ <span className="font-bold text-slate-700">"{showShareModal.name}"</span> với người dùng khác qua email.
+              </p>
+              
+              <div className="space-y-4 mb-8">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Email người nhận</label>
+                  <input 
+                    type="email" 
+                    placeholder="example@gmail.com" 
+                    value={shareEmail}
+                    onChange={(e) => setShareEmail(e.target.value)}
+                    autoFocus
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowShareModal(null)}
+                  className="flex-1 px-6 py-3 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+                >
+                  Hủy
+                </button>
+                <button 
+                  onClick={handleShare}
+                  disabled={isSharing || !shareEmail.trim()}
+                  className="flex-1 px-6 py-3 rounded-xl text-sm font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isSharing && <Loader2 className="w-4 h-4 animate-spin" />}
+                  Chia sẻ ngay
                 </button>
               </div>
             </motion.div>

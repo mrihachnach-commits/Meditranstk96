@@ -53,6 +53,8 @@ import {
   User as UserIcon,
   UserPlus,
   Users,
+  Share2,
+  Pencil,
   X,
   Square,
   Check,
@@ -104,7 +106,9 @@ import {
   Timestamp,
   getDocFromServer,
   OperationType,
-  handleFirestoreError
+  handleFirestoreError,
+  or,
+  collectionGroup
 } from './firebase';
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
@@ -216,6 +220,7 @@ export default function App() {
   const totalJobs = Math.ceil(numPages / PAGES_PER_JOB);
 
   const [fileId, setFileId] = useState<string | null>(null);
+  const [fileOwnerId, setFileOwnerId] = useState<string | null>(null);
   const [showExplorer, setShowExplorer] = useState(true);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [translations, setTranslations] = useState<TranslationState>({});
@@ -283,6 +288,16 @@ export default function App() {
   const [allFolders, setAllFolders] = useState<{id: string, name: string, parentId?: string | null}[]>([]);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean | null>(null);
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null);
+  
+  // Sharing State
+  const [showShareKeyModal, setShowShareKeyModal] = useState<any | null>(null);
+  const [shareKeyEmail, setShareKeyEmail] = useState('');
+  const [isSharingKey, setIsSharingKey] = useState(false);
+  
+  // Renaming State
+  const [showRenameKeyModal, setShowRenameKeyModal] = useState<any | null>(null);
+  const [renameKeyName, setRenameKeyName] = useState('');
+  const [isUpdatingKeyName, setIsUpdatingKeyName] = useState(false);
   
   // Summarization State
   const [translationPanelMode, setTranslationPanelMode] = useState<'translation' | 'summary'>('translation');
@@ -381,6 +396,7 @@ export default function App() {
     // Generate a temporary docId for local file
     const docId = `local_${localFile.name.replace(/[^a-zA-Z0-9]/g, '_')}_${localFile.size}`;
     setFileId(docId);
+    setFileOwnerId(user?.uid || null);
 
     // Increment fileId to invalidate all pending translations
     fileIdRef.current += 1;
@@ -489,6 +505,8 @@ export default function App() {
           await addDoc(collection(db, `users/${user.uid}/documents`), {
             name: fileToUpload.name,
             folderId: folderId,
+            ownerId: user.uid,
+            sharedWith: [],
             token: data.token,
             downloadUrl: data.download_url,
             size: fileToUpload.size,
@@ -858,7 +876,13 @@ export default function App() {
   useEffect(() => {
     if (user) {
       const path = 'apiKeys';
-      const q = query(collection(db, 'apiKeys'), where('ownerId', '==', user.uid));
+      const q = query(
+        collection(db, 'apiKeys'), 
+        or(
+          where('ownerId', '==', user.uid),
+          where('sharedWith', 'array-contains', user.email)
+        )
+      );
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setUserKeys(keys);
@@ -945,6 +969,51 @@ export default function App() {
       if (selectedKeyId === keyId) setSelectedKeyId(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  };
+
+  const handleShareKey = async () => {
+    if (!user || !showShareKeyModal || !shareKeyEmail.trim()) return;
+    setIsSharingKey(true);
+    try {
+      const docRef = doc(db, 'apiKeys', showShareKeyModal.id);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const data = snap.data();
+        const currentSharedWith = data.sharedWith || [];
+        if (!currentSharedWith.includes(shareKeyEmail.trim())) {
+          await updateDoc(docRef, {
+            sharedWith: [...currentSharedWith, shareKeyEmail.trim()]
+          });
+          showToast(`Đã chia sẻ Key với ${shareKeyEmail}`, 'success');
+        } else {
+          showToast(`Key đã được chia sẻ với ${shareKeyEmail} rồi`, 'info');
+        }
+      }
+      setShareKeyEmail('');
+      setShowShareKeyModal(null);
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.UPDATE, `apiKeys/${showShareKeyModal.id}`);
+    } finally {
+      setIsSharingKey(false);
+    }
+  };
+
+  const handleUpdateKeyName = async () => {
+    if (!user || !showRenameKeyModal || !renameKeyName.trim()) return;
+    setIsUpdatingKeyName(true);
+    try {
+      const docRef = doc(db, 'apiKeys', showRenameKeyModal.id);
+      await updateDoc(docRef, {
+        name: renameKeyName.trim()
+      });
+      showToast(`Đã đổi tên Key thành "${renameKeyName.trim()}"`, 'success');
+      setShowRenameKeyModal(null);
+      setRenameKeyName('');
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.UPDATE, `apiKeys/${showRenameKeyModal.id}`);
+    } finally {
+      setIsUpdatingKeyName(false);
     }
   };
 
@@ -1350,19 +1419,19 @@ export default function App() {
     }
 
     if (window.confirm(`Bạn có chắc chắn muốn XÓA vĩnh viễn tệp "${currentFileName}" khỏi hệ thống? Hành động này không thể hoàn tác.`)) {
+      const uId = auth.currentUser?.uid;
       try {
-        const userId = auth.currentUser?.uid;
-        if (!userId) {
+        if (!uId) {
           showToast("Vui lòng đăng nhập để thực hiện thao tác này", 'error');
           return;
         }
         
-        await deleteDoc(doc(db, `users/${userId}/documents`, fileId));
+        await deleteDoc(doc(db, `users/${uId}/documents`, fileId));
         showToast("Đã xóa tài liệu thành công", 'success');
         clearFile();
       } catch (error: any) {
         console.error("Lỗi khi xóa tài liệu:", error);
-        handleFirestoreError(error, OperationType.DELETE, `users/${userId}/documents/${fileId}`);
+        handleFirestoreError(error, OperationType.DELETE, `users/${uId}/documents/${fileId}`);
       }
     }
   };
@@ -1462,7 +1531,7 @@ export default function App() {
       return;
     }
 
-    const userId = auth.currentUser?.uid;
+    const userId = fileOwnerId || auth.currentUser?.uid;
     if (!userId) {
       showToast("Vui lòng đăng nhập để lưu tóm tắt.", 'error');
       return;
@@ -1565,6 +1634,7 @@ export default function App() {
     setIsPdfLoading(true);
     setPdfError(null);
     setFileId(fileData.id);
+    setFileOwnerId(fileData.ownerId || user?.uid || null);
     setCurrentFileName(fileData.name);
     setShowExplorer(false);
     setIsLocalOnly(false);
@@ -2102,10 +2172,10 @@ export default function App() {
         setTranslations(prev => ({ ...prev, [targetPage]: finalResult }));
         setActiveTranslation({ page: targetPage, content: fullContent, status: 'success' });
         
-        if (user && fileId) {
-          setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', targetPage.toString()), {
+        if (user && fileId && fileOwnerId) {
+          setDoc(doc(db, 'users', fileOwnerId, 'documents', fileId, 'pages', targetPage.toString()), {
             content: fullContent, status: 'success', updatedAt: serverTimestamp()
-          }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/documents/${fileId}/pages/${targetPage}`));
+          }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${fileOwnerId}/documents/${fileId}/pages/${targetPage}`));
         }
       }
       
@@ -2219,10 +2289,10 @@ export default function App() {
             }, 300);
           }
           
-          if (user && fileId) {
-            setDoc(doc(db, 'users', user.uid, 'documents', fileId, 'pages', pageNum.toString()), {
+          if (user && fileId && fileOwnerId) {
+            setDoc(doc(db, 'users', fileOwnerId, 'documents', fileId, 'pages', pageNum.toString()), {
               content: fullContent, status: 'success', updatedAt: serverTimestamp()
-            }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/documents/${fileId}/pages/${pageNum}`));
+            }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${fileOwnerId}/documents/${fileId}/pages/${pageNum}`));
           }
         }
       }
@@ -2290,9 +2360,9 @@ export default function App() {
   }, [currentPage, pdfDoc, autoTranslate, numPages, preTranslatePage, autoTranslateLookAhead, translations]);
 
   useEffect(() => {
-    if (user && fileId) {
-      console.log(`[MediTrans] Listening for translations for document: ${fileId}`);
-      const q = query(collection(db, 'users', user.uid, 'documents', fileId, 'pages'));
+    if (user && fileId && fileOwnerId) {
+      console.log(`[MediTrans] Listening for translations for document: ${fileId} owned by: ${fileOwnerId}`);
+      const q = query(collection(db, 'users', fileOwnerId, 'documents', fileId, 'pages'));
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const remoteTranslations: TranslationState = {};
         snapshot.docs.forEach(doc => {
@@ -4633,6 +4703,12 @@ export default function App() {
                                       {key.status === 'active' ? 'Hoạt động' : 'Lỗi'}
                                     </span>
                                   )}
+                                  {key.ownerId !== user.uid && (
+                                    <span className="text-[8px] px-1.5 py-0.5 rounded-full font-black uppercase tracking-tighter bg-indigo-100 text-indigo-600 flex items-center gap-1">
+                                      <Users className="w-2 h-2" />
+                                      Được chia sẻ
+                                    </span>
+                                  )}
                                 </div>
                                 <p className="text-[10px] text-slate-400 font-mono truncate max-w-[200px]">
                                   {key.value.substring(0, 8)}••••••••{key.value.substring(key.value.length - 4)}
@@ -4644,6 +4720,27 @@ export default function App() {
                                 )}
                               </div>
                               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                {key.ownerId === user.uid && (
+                                  <>
+                                    <button 
+                                      onClick={() => {
+                                        setShowRenameKeyModal(key);
+                                        setRenameKeyName(key.name);
+                                      }}
+                                      className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-slate-600 rounded-lg transition-colors"
+                                      title="Đổi tên Key"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                      onClick={() => setShowShareKeyModal(key)}
+                                      className="p-1.5 hover:bg-indigo-50 text-indigo-400 hover:text-indigo-500 rounded-lg transition-colors"
+                                      title="Chia sẻ Key"
+                                    >
+                                      <Share2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
                                 <button 
                                   onClick={() => setKeyToDelete(key)}
                                   className="p-1.5 hover:bg-rose-50 text-rose-400 hover:text-rose-500 rounded-lg transition-colors"
@@ -5326,6 +5423,126 @@ export default function App() {
       )}
     </div>
     
+    {/* Share API Key Modal */}
+    <AnimatePresence>
+      {showShareKeyModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowShareKeyModal(null)}
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+          />
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+            className="relative bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden p-8"
+          >
+            <div className="bg-indigo-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 mx-auto">
+              <Share2 className="w-8 h-8 text-indigo-500" />
+            </div>
+            <h3 className="text-xl font-display font-bold text-slate-800 mb-2 text-center">Chia sẻ API Key</h3>
+            <p className="text-slate-500 text-sm text-center mb-6">
+              Chia sẻ Key <span className="font-bold text-slate-700">"{showShareKeyModal.name}"</span> với bác sĩ khác.
+            </p>
+            
+            <div className="space-y-4 mb-8">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Email người nhận</label>
+                <input 
+                  type="email" 
+                  placeholder="doctor@medical.com" 
+                  value={shareKeyEmail}
+                  onChange={(e) => setShareKeyEmail(e.target.value)}
+                  autoFocus
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm font-medium"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowShareKeyModal(null)}
+                className="flex-1 px-6 py-3 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+              >
+                Hủy
+              </button>
+              <button 
+                onClick={handleShareKey}
+                disabled={isSharingKey || !shareKeyEmail.trim()}
+                className="flex-1 px-6 py-3 rounded-xl text-sm font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isSharingKey && <Loader2 className="w-4 h-4 animate-spin" />}
+                Chia sẻ ngay
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    {/* Rename API Key Modal */}
+    <AnimatePresence>
+      {showRenameKeyModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowRenameKeyModal(null)}
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+          />
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+            className="relative bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden p-8"
+          >
+            <div className="bg-slate-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 mx-auto">
+              <Pencil className="w-8 h-8 text-slate-500" />
+            </div>
+            <h3 className="text-xl font-display font-bold text-slate-800 mb-2 text-center">Đổi tên API Key</h3>
+            <p className="text-slate-500 text-sm text-center mb-6">
+              Vui lòng nhập tên mới cho Key này.
+            </p>
+            
+            <div className="space-y-4 mb-8">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Tên Key mới</label>
+                <input 
+                  type="text" 
+                  placeholder="Ví dụ: Gemini Pro Key mới" 
+                  value={renameKeyName}
+                  onChange={(e) => setRenameKeyName(e.target.value)}
+                  autoFocus
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-sm font-medium"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowRenameKeyModal(null)}
+                className="flex-1 px-6 py-3 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition-colors"
+              >
+                Hủy
+              </button>
+              <button 
+                onClick={handleUpdateKeyName}
+                disabled={isUpdatingKeyName || !renameKeyName.trim() || renameKeyName.trim() === showRenameKeyModal.name}
+                className="flex-1 px-6 py-3 rounded-xl text-sm font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isUpdatingKeyName && <Loader2 className="w-4 h-4 animate-spin" />}
+                Lưu thay đổi
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
     {/* Toast Notification */}
     <AnimatePresence>
       {toast && (

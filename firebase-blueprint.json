@@ -22,6 +22,7 @@
       "properties": {
         "keyId": { "type": "string", "description": "The unique identifier for the key." },
         "ownerId": { "type": "string", "description": "The UID of the user who owns this key." },
+        "sharedWith": { "type": "array", "items": { "type": "string" }, "description": "List of user emails this key is shared with." },
         "name": { "type": "string", "description": "A friendly name for the key (e.g., 'Gemini Pro Key')." },
         "value": { "type": "string", "description": "The actual API key value." },
         "engine": { "type": "string", "enum": ["gemini", "openai", "anthropic"], "description": "The translation engine this key is for." },
@@ -60,6 +61,8 @@
       "properties": {
         "name": { "type": "string", "description": "The name of the file." },
         "folderId": { "type": "string", "description": "The ID of the folder containing this file." },
+        "ownerId": { "type": "string", "description": "The UID of the user who owns this file." },
+        "sharedWith": { "type": "array", "items": { "type": "string" }, "description": "List of user emails this document is shared with." },
         "token": { "type": "string", "description": "The TinyVault token for the file." },
         "downloadUrl": { "type": "string", "format": "uri", "description": "The download URL for the file." },
         "size": { "type": "number", "description": "The size of the file in bytes." },
