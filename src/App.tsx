@@ -2216,8 +2216,8 @@ export default function App() {
       if (pagesToBuffer.length === 0) return;
 
       // Limit concurrent translations to avoid browser/network congestion, 
-      // even if we have many keys. 5 is a good balance.
-      const MAX_CONCURRENT_PRE_TRANSLATION = 5;
+      // even if we have many keys. 6 is a good balance to allow 1 current + 5 lookahead.
+      const MAX_CONCURRENT_PRE_TRANSLATION = 6;
       const currentConcurrency = translatingPagesRef.current.size;
       const spaceLeft = MAX_CONCURRENT_PRE_TRANSLATION - currentConcurrency;
 
@@ -2237,7 +2237,7 @@ export default function App() {
         }, index * 200);
       });
     }
-  }, [currentPage, pdfDoc, autoTranslate, numPages, preTranslatePage, autoTranslateLookAhead]);
+  }, [currentPage, pdfDoc, autoTranslate, numPages, preTranslatePage, autoTranslateLookAhead, translations]);
 
   useEffect(() => {
     if (user && fileId) {
@@ -2384,7 +2384,7 @@ export default function App() {
     }, 300); // Very fast debounce for instant translation navigation
 
     return () => clearTimeout(timer);
-  }, [currentPage, pdfDoc, autoTranslate, isRendering, isTranslating, translateCurrentPage, activeTranslation?.page]);
+  }, [currentPage, pdfDoc, autoTranslate, isRendering, isTranslating, translateCurrentPage, activeTranslation?.page, translations]);
 
   useEffect(() => {
     if (pdfDoc) {
