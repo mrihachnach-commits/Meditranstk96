@@ -34,6 +34,7 @@ import {
   getDocs, 
   query, 
   where, 
+  orderBy,
   onSnapshot, 
   deleteDoc, 
   updateDoc, 
@@ -75,6 +76,7 @@ interface FileExplorerProps {
 export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUploadStart, onLocalFileOpen }) => {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'my' | 'shared'>('my');
+  const [myFolders, setMyFolders] = useState<FolderData[]>([]);
   const [folders, setFolders] = useState<FolderData[]>([]);
   const [files, setFiles] = useState<FileData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,6 +102,21 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
   const user = auth.currentUser;
+
+  // Fetch my folders always for the move modal
+  useEffect(() => {
+    if (!user) {
+      setMyFolders([]);
+      return;
+    }
+    const q = query(collection(db, `users/${user.uid}/folders`), orderBy('name'));
+    return onSnapshot(q, (snapshot) => {
+      const folderList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as FolderData));
+      setMyFolders(folderList);
+    }, (error) => {
+      console.error("Error fetching my folders:", error);
+    });
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -228,8 +245,65 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
     }
   };
 
+  const handleCloneSharedFile = async (file: FileData, targetFolderId: string | null) => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      // 1. Create the document metadata in current user's collection
+      const newDocRef = await addDoc(collection(db, `users/${user.uid}/documents`), {
+        name: file.name,
+        folderId: targetFolderId,
+        ownerId: user.uid,
+        token: file.token,
+        downloadUrl: file.downloadUrl,
+        size: file.size,
+        type: file.type,
+        createdAt: serverTimestamp(),
+        clonedFrom: file.id // Reference to original
+      });
+
+      // 2. Copy the translations (pages)
+      // Find the original owner path
+      // Note: We need to know who the original owner was. 
+      // The FileData should have ownerId.
+      if (file.ownerId) {
+        const pagesRef = collection(db, `users/${file.ownerId}/documents/${file.id}/pages`);
+        const pagesSnap = await getDocs(pagesRef);
+        
+        for (const pageDoc of pagesSnap.docs) {
+          await setDoc(doc(db, `users/${user.uid}/documents/${newDocRef.id}/pages`, pageDoc.id), pageDoc.data());
+        }
+
+        // Also copy summaries if any
+        const summariesRef = collection(db, `users/${file.ownerId}/documents/${file.id}/summaries`);
+        const summariesSnap = await getDocs(summariesRef);
+        for (const sumDoc of summariesSnap.docs) {
+          await addDoc(collection(db, `users/${user.uid}/documents/${newDocRef.id}/summaries`), sumDoc.data());
+        }
+      }
+
+      setShowMoveModal(null);
+      // Switch to 'my' view to see the result
+      setViewMode('my');
+      setCurrentFolderId(targetFolderId);
+    } catch (error) {
+      console.error("Error cloning shared file:", error);
+      handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/documents`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleMoveItem = async (targetFolderId: string | null) => {
     if (!user || !showMoveModal) return;
+
+    if (viewMode === 'shared' && showMoveModal.type === 'file') {
+      const fileToClone = files.find(f => f.id === showMoveModal.id);
+      if (fileToClone) {
+        await handleCloneSharedFile(fileToClone, targetFolderId);
+      }
+      return;
+    }
 
     try {
       const collectionName = showMoveModal.type === 'file' ? 'documents' : 'folders';
@@ -600,52 +674,67 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
                       <Download className="w-3.5 h-3.5" />
                     </button>
                     {viewMode === 'my' && (
-                      <button 
+                      <>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowShareModal({ id: file.id, type: 'file', name: file.name });
+                            setActiveMenuId(null);
+                          }}
+                          className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                          title="Chia sẻ"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowMoveModal({ id: file.id, type: 'file' });
+                            setActiveMenuId(null);
+                          }}
+                          className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                          title="Di chuyển"
+                        >
+                          <Move className="w-3.5 h-3.5" />
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenameValue(file.name);
+                            setShowRenameModal({ id: file.id, name: file.name, type: 'file' });
+                            setActiveMenuId(null);
+                          }}
+                          className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
+                          title="Đổi tên"
+                        >
+                          <Edit className="w-3.5 h-3.5" />
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowDeleteConfirm({ id: file.id, type: 'file', name: file.name });
+                            setActiveMenuId(null);
+                          }}
+                          className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-rose-500 shadow-lg border border-slate-100"
+                          title="Xóa"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                    {viewMode === 'shared' && (
+                       <button 
                         onClick={(e) => {
                           e.stopPropagation();
-                          setShowShareModal({ id: file.id, type: 'file', name: file.name });
+                          setShowMoveModal({ id: file.id, type: 'file' });
                           setActiveMenuId(null);
                         }}
                         className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
-                        title="Chia sẻ"
+                        title="Di chuyển về thư mục của tôi"
                       >
-                        <Share2 className="w-3.5 h-3.5" />
+                        <Move className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowMoveModal({ id: file.id, type: 'file' });
-                        setActiveMenuId(null);
-                      }}
-                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
-                      title="Di chuyển"
-                    >
-                      <Move className="w-3.5 h-3.5" />
-                    </button>
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setRenameValue(file.name);
-                        setShowRenameModal({ id: file.id, name: file.name, type: 'file' });
-                        setActiveMenuId(null);
-                      }}
-                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-indigo-500 shadow-lg border border-slate-100"
-                      title="Đổi tên"
-                    >
-                      <Edit className="w-3.5 h-3.5" />
-                    </button>
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowDeleteConfirm({ id: file.id, type: 'file', name: file.name });
-                        setActiveMenuId(null);
-                      }}
-                      className="p-1.5 bg-white rounded-lg text-slate-500 hover:text-rose-500 shadow-lg border border-slate-100"
-                      title="Xóa"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
                   </div>
                 </div>
               </motion.div>
@@ -687,7 +776,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, onUplo
                   </div>
                   <span className="text-sm font-bold text-slate-700">Root</span>
                 </button>
-                {folders.filter(f => f.id !== showMoveModal.id).map(folder => (
+                {myFolders.filter(f => f.id !== showMoveModal.id).map(folder => (
                   <button 
                     key={folder.id}
                     onClick={() => handleMoveItem(folder.id)}
