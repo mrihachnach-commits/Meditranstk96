@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
@@ -632,12 +632,42 @@ export default function App() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showAdminNewUserPassword, setShowAdminNewUserPassword] = useState(false);
   const [showApiKeys, setShowApiKeys] = useState(false);
+  
+  const [ownedKeys, setOwnedKeys] = useState<any[]>([]);
+  const [sharedKeys, setSharedKeys] = useState<any[]>([]);
+  const [isOwnedKeysLoaded, setIsOwnedKeysLoaded] = useState(false);
+  const [isSharedKeysLoaded, setIsSharedKeysLoaded] = useState(false);
+  
+  const isKeysLoading = user ? (!isOwnedKeysLoaded || !isSharedKeysLoaded) : false;
 
-  const [userKeys, setUserKeys] = useState<any[]>([]);
+  const userKeys = useMemo(() => {
+    const combined = [...ownedKeys];
+    sharedKeys.forEach(sk => {
+      if (!combined.find(k => k.id === sk.id)) {
+        combined.push(sk);
+      }
+    });
+    return combined;
+  }, [ownedKeys, sharedKeys]);
+
   const [selectedKeyId, setSelectedKeyId] = useState<string | null>(() => {
     return localStorage.getItem('selected_key_id');
   });
 
+  // Auto-select key logic
+  useEffect(() => {
+    if (userKeys.length > 0) {
+      const exists = userKeys.some(k => k.id === selectedKeyId);
+      if (!selectedKeyId || !exists) {
+        console.log(`[MediTrans AI] Auto-selecting first available key: ${userKeys[0].name}`);
+        setSelectedKeyId(userKeys[0].id);
+      }
+    } else if (selectedKeyId && !isKeysLoading) {
+      setSelectedKeyId(null);
+    }
+  }, [userKeys, selectedKeyId, isKeysLoading]);
+
+  // Persist selected key id
   useEffect(() => {
     if (selectedKeyId) {
       localStorage.setItem('selected_key_id', selectedKeyId);
@@ -876,19 +906,21 @@ export default function App() {
     }
   }, [user, isAuthReady, hasDoneInitialCheck]);
 
-  const [ownedKeys, setOwnedKeys] = useState<any[]>([]);
-  const [sharedKeys, setSharedKeys] = useState<any[]>([]);
+  // Keys are now handled at the top of the component
 
   useEffect(() => {
     if (!user) {
       setOwnedKeys([]);
+      setIsOwnedKeysLoaded(true);
       return;
     }
     const q = query(collection(db, 'apiKeys'), where('ownerId', '==', user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setOwnedKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setIsOwnedKeysLoaded(true);
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'apiKeys');
+      setIsOwnedKeysLoaded(true);
     });
     return () => unsubscribe();
   }, [user, isLocalOnly]);
@@ -897,6 +929,7 @@ export default function App() {
     const userEmail = user?.email?.trim().toLowerCase();
     if (!user || !userEmail || isLocalOnly) {
       setSharedKeys([]);
+      setIsSharedKeysLoaded(true);
       return;
     }
     
@@ -910,30 +943,15 @@ export default function App() {
       const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       console.log(`[MediTrans] Found ${keys.length} shared keys`);
       setSharedKeys(keys);
+      setIsSharedKeysLoaded(true);
     }, (error) => {
       console.error("Error fetching shared keys:", error);
+      setIsSharedKeysLoaded(true);
     });
     return () => unsubscribe();
   }, [user, isLocalOnly]);
 
-  useEffect(() => {
-    const combined = [...ownedKeys];
-    sharedKeys.forEach(sk => {
-      if (!combined.find(k => k.id === sk.id)) {
-        combined.push(sk);
-      }
-    });
-    
-    setUserKeys(combined);
-    
-    if (combined.length > 0) {
-      if (!selectedKeyId || !combined.find(k => k.id === selectedKeyId)) {
-        setSelectedKeyId(combined[0].id);
-      }
-    } else {
-      setSelectedKeyId(null);
-    }
-  }, [ownedKeys, sharedKeys, selectedKeyId]);
+  // Keys are now handled by useMemo and direct effects
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2442,6 +2460,12 @@ export default function App() {
   const currentKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
+    // Wait for keys to load if we have a user
+    if (user && isKeysLoading) {
+      console.log(`[MediTrans AI] Postponing key sync - waiting for Vault keys to load...`);
+      return;
+    }
+
     const currentEngineType = selectedEngine.startsWith('gemini') ? 'gemini' : selectedEngine;
     
     // Enhanced logging for diagnostics
@@ -2457,13 +2481,17 @@ export default function App() {
     let selectedVaultKeyName = "";
     let primaryKey = "";
 
+    const isGeminiEngine = (engine: string) => {
+      const e = (engine || 'gemini').toLowerCase();
+      return e === 'gemini' || e.includes('gemini') || e.includes('flash') || e.includes('pro');
+    };
+
     // Prioritize selected key from vault
     if (user && selectedKeyId) {
       const vaultKey = userKeys.find(k => k.id === selectedKeyId);
       if (vaultKey) {
-        const vaultEngine = (vaultKey.engine || 'gemini').toLowerCase();
-        const isGeminiMatch = vaultEngine === 'gemini' || vaultEngine.includes('gemini') || vaultEngine.includes('flash') || vaultEngine.includes('pro');
-        const engineMatches = vaultEngine === currentEngineType || (currentEngineType === 'gemini' && isGeminiMatch);
+        const engineMatches = vaultKey.engine === currentEngineType || 
+                             (currentEngineType === 'gemini' && isGeminiEngine(vaultKey.engine));
         
         if (engineMatches) {
           primaryKey = vaultKey.value;
@@ -2480,10 +2508,10 @@ export default function App() {
     if (user && userKeys.length > 0) {
       const otherVaultKeys = userKeys
         .filter(k => {
-          const vEng = (k.engine || 'gemini').toLowerCase();
-          const isGeminiMatch = vEng === 'gemini' || vEng.includes('gemini') || vEng.includes('flash') || vEng.includes('pro');
-          const engineMatches = vEng === currentEngineType || (currentEngineType === 'gemini' && isGeminiMatch);
-          return engineMatches && k.id !== selectedKeyId && k.status !== 'error';
+          const engineMatches = k.engine === currentEngineType || 
+                               (currentEngineType === 'gemini' && isGeminiEngine(k.engine));
+          // Important: also check if k.value exists to avoid adding empty keys
+          return engineMatches && k.id !== selectedKeyId && k.status !== 'error' && k.value;
         })
         .map(k => k.value);
       
@@ -2532,7 +2560,7 @@ export default function App() {
     } else {
       console.warn(`[MediTrans AI] Engine: ${selectedEngine} - NO API KEYS AVAILABLE`);
     }
-  }, [selectedEngine, engineKeys, user, selectedKeyId, userKeys]);
+  }, [selectedEngine, engineKeys, user, selectedKeyId, userKeys, isKeysLoading]);
 
   // Handle Focus Mode (FullScreen) transitions
   useEffect(() => {
