@@ -68,7 +68,8 @@ import {
   Save,
   ScrollText,
   FileSearch,
-  BookOpen
+  BookOpen,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -255,10 +256,16 @@ export default function App() {
   useEffect(() => {
     isTranslatingRef.current = isTranslating;
   }, [isTranslating]);
-  const selectedEngine: TranslationEngine = 'gemini-flash';
+  const [selectedEngine, setSelectedEngine] = useState<TranslationEngine>(() => {
+    return (localStorage.getItem('mediTrans_selectedEngine') as TranslationEngine) || 'gemini-flash';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('mediTrans_selectedEngine', selectedEngine);
+  }, [selectedEngine]);
   
   const [engineKeys, setEngineKeys] = useState<Record<TranslationEngine, string>>(() => {
-    const saved = localStorage.getItem('engine_keys');
+    const saved = localStorage.getItem('mediTrans_engineKeys');
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -267,15 +274,10 @@ export default function App() {
       }
     }
     
-    // Initial defaults
-    const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-    const fallbackKey = "AIzaSyAafP-Y07NOB01sVKhK_3h6c28oY33Q_JE";
-    const defaultKey = (envKey && envKey.trim() !== "" && envKey !== "MY_GEMINI_API_KEY") ? envKey : fallbackKey;
-    
     return {
-      'gemini-flash': defaultKey,
-      'gemini-pro': defaultKey,
-      'medical-specialized': ''
+      'gemini-flash': import.meta.env.VITE_GEMINI_API_KEY || '',
+      'gemini-pro': import.meta.env.VITE_GEMINI_API_KEY || '',
+      'medical-specialized': import.meta.env.VITE_MEDICAL_API_KEY || ''
     };
   });
   const [showSettings, setShowSettings] = useState(false);
@@ -898,9 +900,11 @@ export default function App() {
         const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setUserKeys(keys);
         
-        // Auto-select first key if none selected
-        if (keys.length > 0 && !selectedKeyId) {
-          setSelectedKeyId(keys[0].id);
+        // Auto-select first key if none selected OR current selected key is not in the new keys list
+        if (keys.length > 0) {
+          if (!selectedKeyId || !keys.find(k => k.id === selectedKeyId)) {
+            setSelectedKeyId(keys[0].id);
+          }
         }
       }, (error) => {
         handleFirestoreError(error, OperationType.GET, path);
@@ -949,6 +953,8 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await signOut(auth);
+      localStorage.removeItem('mediTrans_selectedKeyId');
+      setSelectedKeyId(null);
     } catch (error) {
       console.error("Logout failed:", error);
     }
@@ -2427,10 +2433,13 @@ export default function App() {
     
     // 1. Primary key (selected from vault or default from engineKeys)
     let primaryKey = engineKeys[selectedEngine];
+    let selectedVaultKeyName = "";
+
     if (user && selectedKeyId) {
       const vaultKey = userKeys.find(k => k.id === selectedKeyId);
       if (vaultKey && vaultKey.engine === currentEngineType) {
         primaryKey = vaultKey.value;
+        selectedVaultKeyName = vaultKey.name;
       }
     }
     if (primaryKey) allKeys.push(primaryKey);
@@ -2450,7 +2459,7 @@ export default function App() {
     }
 
     // Deduplicate
-    allKeys = Array.from(new Set(allKeys));
+    allKeys = Array.from(new Set(allKeys.filter(k => k && k.trim() !== "")));
     const keyString = allKeys.join(',');
 
     if (currentEngineRef.current === selectedEngine && currentKeyRef.current === keyString) {
@@ -2470,7 +2479,7 @@ export default function App() {
 
     // Log key initialization for debugging
     if (allKeys.length > 0) {
-      console.log(`[MediTrans AI] Initialized ${selectedEngine} with ${allKeys.length} keys.`);
+      console.log(`[MediTrans AI] Initialized ${selectedEngine} with ${allKeys.length} keys. Primary vault key: ${selectedVaultKeyName || "None"}`);
     } else {
       console.log(`[MediTrans AI] Initialized ${selectedEngine} with system default key`);
     }
@@ -4464,6 +4473,38 @@ export default function App() {
                     </AnimatePresence>
                   </div>
                 )}
+
+                <div className="space-y-4 pt-4 border-t border-slate-100">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Sparkles className="w-4 h-4 text-indigo-500" />
+                    <label className="text-xs font-bold text-slate-700 uppercase tracking-widest">
+                      Động cơ dịch thuật (Engine)
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['gemini-flash', 'gemini-pro', 'medical-specialized'] as TranslationEngine[]).map((engine) => {
+                      const labels: Record<string, string> = {
+                        'gemini-flash': 'Gemini Flash',
+                        'gemini-pro': 'Gemini Pro',
+                        'medical-specialized': 'Medical AI'
+                      };
+                      return (
+                        <button
+                          key={engine}
+                          onClick={() => setSelectedEngine(engine)}
+                          className={cn(
+                            "px-2 py-3 rounded-xl text-[10px] font-bold border transition-all flex flex-col items-center gap-1 text-center h-full justify-center",
+                            selectedEngine === engine
+                              ? "bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-100"
+                              : "bg-white border-slate-100 text-slate-500 hover:border-slate-200"
+                          )}
+                        >
+                          <span>{labels[engine]}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
                 <div className="space-y-4 pt-4 border-t border-slate-100">
                   <div className="flex items-center justify-between">

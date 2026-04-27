@@ -12,9 +12,9 @@ export class GeminiService implements TranslationService {
     this.modelName = modelName;
     
     if (Array.isArray(apiKeys)) {
-      this.apiKeys = apiKeys.filter(k => k && k.trim() !== "");
+      this.apiKeys = Array.from(new Set(apiKeys.filter(k => k && k.trim() !== "")));
     } else if (apiKeys && apiKeys.trim() !== "") {
-      this.apiKeys = apiKeys.split(/[,\n]/).map(k => k.trim()).filter(k => k !== "");
+      this.apiKeys = Array.from(new Set(apiKeys.split(/[,\n]/).map(k => k.trim()).filter(k => k !== "")));
     }
     
     this.apiKeys.forEach(k => {
@@ -23,7 +23,11 @@ export class GeminiService implements TranslationService {
       }
     });
     
-    const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    // In some environments, process.env.GEMINI_API_KEY is available directly
+    // In Vite, it might be import.meta.env.VITE_GEMINI_API_KEY
+    const envKey = (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || 
+                   (typeof process !== 'undefined' && process.env?.API_KEY);
+    
     if (envKey && envKey.trim() !== "" && envKey !== "MY_GEMINI_API_KEY") {
       this.systemKey = envKey;
       if (!GeminiService.globalKeyLastUsed.has(envKey)) {
@@ -31,7 +35,7 @@ export class GeminiService implements TranslationService {
       }
     }
 
-    console.log(`[MediTrans] GeminiService initialized with ${this.apiKeys.length} manual keys and ${this.systemKey ? '1' : '0'} system key. Model: ${modelName}`);
+    console.log(`[MediTrans] GeminiService: ${this.apiKeys.length} keys loaded. System key: ${this.systemKey ? 'Yes' : 'No'}. Model: ${modelName}`);
   }
 
   private getMIN_REQUEST_INTERVAL(): number {
@@ -54,15 +58,20 @@ export class GeminiService implements TranslationService {
 
   private async acquireKeyAndInstance(): Promise<{ ai: any, key: string }> {
     const key = this.getBestAvailableKey();
-    if (!key) throw new Error("Không có API Key khả dụng (Tất cả đang bảo trì hoặc hết hạn mức).");
+    if (!key) {
+      console.error("[MediTrans] No available API keys for GeminiService.");
+      throw new Error("Không có API Key khả dụng (Tất cả đang bảo trì hoặc hết hạn mức).");
+    }
 
     await this.waitForKeyRateLimit(key);
     
     try {
+      const isSystem = key === this.systemKey;
+      console.log(`[MediTrans] Using key: ...${key.substring(key.length - 4)} (${isSystem ? 'System' : 'Vault'}) for ${this.modelName}`);
       const ai = new GoogleGenAI({ apiKey: key });
       return { ai, key };
     } catch (e) {
-      console.error("[MediTrans] Failed to initialize GoogleGenAI with key:", key.substring(0, 8), e);
+      console.error("[MediTrans] Failed to initialize GoogleGenAI with key:", key.substring(key.length - 4), e);
       throw e;
     }
   }
@@ -85,11 +94,16 @@ export class GeminiService implements TranslationService {
   private rotateKey(exhaustedKey: string, isQuotaError: boolean = true): boolean {
     if (exhaustedKey) {
       const duration = isQuotaError ? 60000 : 2000;
+      console.warn(`[MediTrans] Rotating key ...${exhaustedKey.substring(exhaustedKey.length - 4)}. Reason: ${isQuotaError ? 'Quota/Exhausted' : 'Error'}. Backoff: ${duration}ms`);
       this.exhaustedKeys.add(exhaustedKey);
-      setTimeout(() => this.exhaustedKeys.delete(exhaustedKey), duration);
+      setTimeout(() => {
+        this.exhaustedKeys.delete(exhaustedKey);
+        console.log(`[MediTrans] Key ...${exhaustedKey.substring(exhaustedKey.length - 4)} is back in service.`);
+      }, duration);
     }
     
-    return this.getBestAvailableKey() !== null;
+    const nextKey = this.getBestAvailableKey();
+    return nextKey !== null;
   }
 
   async hasApiKey(): Promise<boolean> {
