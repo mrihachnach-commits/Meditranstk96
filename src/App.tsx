@@ -876,11 +876,12 @@ export default function App() {
   useEffect(() => {
     if (user) {
       const path = 'apiKeys';
+      const userEmail = user.email ? user.email.toLowerCase() : '';
       const q = query(
         collection(db, 'apiKeys'), 
         or(
           where('ownerId', '==', user.uid),
-          where('sharedWith', 'array-contains', user.email)
+          where('sharedWith', 'array-contains', userEmail)
         )
       );
       const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -975,19 +976,21 @@ export default function App() {
   const handleShareKey = async () => {
     if (!user || !showShareKeyModal || !shareKeyEmail.trim()) return;
     setIsSharingKey(true);
+    const targetEmail = shareKeyEmail.trim().toLowerCase();
     try {
       const docRef = doc(db, 'apiKeys', showShareKeyModal.id);
       const snap = await getDoc(docRef);
       if (snap.exists()) {
         const data = snap.data();
-        const currentSharedWith = data.sharedWith || [];
-        if (!currentSharedWith.includes(shareKeyEmail.trim())) {
+        const currentSharedWith = (data.sharedWith || []).map((e: string) => e.toLowerCase());
+        
+        if (!currentSharedWith.includes(targetEmail)) {
           await updateDoc(docRef, {
-            sharedWith: [...currentSharedWith, shareKeyEmail.trim()]
+            sharedWith: [...(data.sharedWith || []), targetEmail]
           });
-          showToast(`Đã chia sẻ Key với ${shareKeyEmail}`, 'success');
+          showToast(`Đã chia sẻ Key với ${targetEmail}`, 'success');
         } else {
-          showToast(`Key đã được chia sẻ với ${shareKeyEmail} rồi`, 'info');
+          showToast(`Key đã được chia sẻ với ${targetEmail} rồi`, 'info');
         }
       }
       setShareKeyEmail('');

@@ -92,7 +92,8 @@ service cloud.firestore {
 
     function isSharedWithMe(data) {
       return isAuthenticated() && request.auth.token.email != null && 
-             data.get('sharedWith', []).hasAny([request.auth.token.email]);
+             (data.get('sharedWith', []).hasAny([request.auth.token.email]) || 
+              data.get('sharedWith', []).hasAny([request.auth.token.email.lower()]));
     }
 
     // ===============================================================
@@ -112,7 +113,7 @@ service cloud.firestore {
 
     function isValidApiKey(data) {
       return hasOnlyAllowedFields(['ownerId', 'sharedWith', 'name', 'value', 'engine', 'createdAt', 'lastUsed', 'status']) &&
-             data.ownerId is string && data.ownerId == request.auth.uid &&
+             data.ownerId is string &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.value is string && data.value.size() > 0 && data.value.size() < 500 &&
              data.engine in ['gemini', 'openai', 'anthropic'] &&
@@ -167,8 +168,8 @@ service cloud.firestore {
 
     match /apiKeys/{keyId} {
       allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || isSharedWithMe(resource.data) || isAdmin());
-      allow create: if isAuthenticated() && isValidApiKey(request.resource.data);
-      allow update: if isAuthenticated() && isDocOwner() && isValidApiKey(request.resource.data);
+      allow create: if isAuthenticated() && isValidApiKey(request.resource.data) && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isAuthenticated() && (isAdmin() || (isDocOwner() && isValidApiKey(request.resource.data) && request.resource.data.ownerId == resource.data.ownerId));
       allow delete: if isAuthenticated() && (isDocOwner() || isAdmin());
     }
 
