@@ -7,10 +7,8 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { PDFDocument } from 'pdf-lib';
-import { MedicalDictionary } from './components/MedicalDictionary';
-
+import { GeminiService } from './services/geminiService';
 import { Logo, LogoWithText } from './components/Logo';
-
 import { FileExplorer, FileData } from './components/FileExplorer';
 import { UploadStatus, UploadTask } from './components/UploadStatus';
 
@@ -78,8 +76,6 @@ import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { saveAs } from 'file-saver';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { GeminiService } from './services/geminiService';
-import { MedicalApiService } from './services/medicalApiService';
 import { TranslationEngine, TranslationService } from './services/translationService';
 import { 
   auth, 
@@ -276,14 +272,12 @@ export default function App() {
     
     return {
       'gemini-flash': '',
-      'gemini-pro': '',
-      'medical-specialized': ''
+      'gemini-pro': ''
     };
   });
   const [showSettings, setShowSettings] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [selectedPagesToDownload, setSelectedPagesToDownload] = useState<number[]>([]);
-  const [hasEnvKey, setHasEnvKey] = useState(false);
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
   const [isLocalOnly, setIsLocalOnly] = useState(false);
   const [showFolderSelectModal, setShowFolderSelectModal] = useState(false);
@@ -549,7 +543,6 @@ export default function App() {
     const checkKey = async () => {
       if (translationService.current) {
         const hasKey = await translationService.current.hasApiKey();
-        setHasEnvKey(hasKey);
       }
     };
     checkKey();
@@ -579,7 +572,7 @@ export default function App() {
       const isNativeFull = !!document.fullscreenElement;
       setIsFullScreen(isNativeFull);
       isFullScreenRef.current = isNativeFull;
-      if (isNativeFull) setSelectedTerm(null);
+      if (isNativeFull) {}
     };
 
     document.addEventListener('fullscreenchange', handleFullScreenChange);
@@ -672,12 +665,7 @@ export default function App() {
   const performKeyCheck = async (silent: boolean = false) => {
     if (!silent) setIsCheckingKeys(true);
     try {
-      // 1. Check System/Environment Key
-      const envKey = engineKeys[selectedEngine];
-      const testService = new GeminiService(envKey, "gemini-3.1-flash-lite-preview");
-      const envResults = await testService.checkAvailableKeys();
-      
-      // 2. Check ALL Vault Keys in parallel for better performance
+      // 1. Check ALL Vault Keys in parallel for better performance
       let activeVaultCount = 0;
       let currentVaultKeyResults = null;
 
@@ -720,13 +708,13 @@ export default function App() {
       // 3. Set results for UI only if not silent
       if (!silent) {
         setKeyCheckResults({
-          envKey: envResults.envKey,
+          envKey: false,
           manualKey: currentVaultKeyResults ? currentVaultKeyResults.isActive : false,
-          envKeyName: "Hệ thống (Environment)",
+          envKeyName: "",
           isVaultKey: !!currentVaultKeyResults,
           vaultKeyName: currentVaultKeyResults?.name || '',
-          totalActive: (envResults.envKey ? 1 : 0) + activeVaultCount,
-          totalChecked: 1 + (userKeys.filter(k => k.engine === (selectedEngine.startsWith('gemini') ? 'gemini' : selectedEngine)).length)
+          totalActive: activeVaultCount,
+          totalChecked: (userKeys.filter(k => k.engine === (selectedEngine.startsWith('gemini') ? 'gemini' : selectedEngine)).length)
         });
         
         // Auto-hide after 10 seconds
@@ -1394,9 +1382,6 @@ export default function App() {
     }
   };
 
-  const [selectedTerm, setSelectedTerm] = useState<string | null>(null);
-  const [dictionaryPosition, setDictionaryPosition] = useState({ x: 0, y: 0 });
-  
   const clearFile = () => {
     if (fileUrl && fileUrl.startsWith('blob:')) URL.revokeObjectURL(fileUrl);
     
@@ -2479,8 +2464,6 @@ export default function App() {
       translationService.current = new GeminiService(allKeys, "gemini-flash-latest");
     } else if (selectedEngine === 'gemini-pro') {
       translationService.current = new GeminiService(allKeys, "gemini-3-flash-preview");
-    } else if (selectedEngine === 'medical-specialized') {
-      translationService.current = new MedicalApiService(serviceKey);
     }
 
     // Enhanced logging for diagnostics
@@ -2823,8 +2806,7 @@ export default function App() {
               // Only trigger if vertical span is reasonable (approx 2-3 lines max)
               if (verticalSpan < 60) {
                 // Position relative to the viewport
-                setDictionaryPosition({ x: rect.left, y: rect.bottom + 10 });
-                setSelectedTerm(text);
+                // Term lookup removed
               }
             }
           } catch (err) {
@@ -3143,7 +3125,7 @@ export default function App() {
             onClick={() => {
               const nextState = !showTranslationPanel;
               setShowTranslationPanel(nextState);
-              if (!nextState) setSelectedTerm(null);
+              if (!nextState) {}
               
               // On mobile, also update mobileViewMode for better sync
               if (window.innerWidth < 768) {
@@ -3348,7 +3330,7 @@ export default function App() {
                       onClick={() => {
                         const nextState = !isLookupEnabled;
                         setIsLookupEnabled(nextState);
-                        if (!nextState) setSelectedTerm(null);
+                        if (!nextState) {}
                       }}
                       className={cn(
                         "p-1.5 rounded transition-all",
@@ -3960,16 +3942,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Dictionary Pop-up */}
-      {selectedTerm && (
-        <MedicalDictionary 
-          selectedTerm={selectedTerm}
-          onClose={() => setSelectedTerm(null)}
-          translationService={translationService.current}
-          position={dictionaryPosition}
-        />
-      )}
-
       {/* Auth Modal */}
       <AnimatePresence>
         {showAuthModal && (
@@ -4488,12 +4460,11 @@ export default function App() {
                       Động cơ dịch thuật (Engine)
                     </label>
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(['gemini-flash', 'gemini-pro', 'medical-specialized'] as TranslationEngine[]).map((engine) => {
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['gemini-flash', 'gemini-pro'] as TranslationEngine[]).map((engine) => {
                       const labels: Record<string, string> = {
                         'gemini-flash': 'Gemini Flash',
-                        'gemini-pro': 'Gemini Pro',
-                        'medical-specialized': 'Medical AI'
+                        'gemini-pro': 'Gemini Pro'
                       };
                       return (
                         <button
@@ -4637,14 +4608,13 @@ export default function App() {
                               className="px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
                             />
                             <select
-                              value={newKey.engine}
-                              onChange={(e) => setNewKey(prev => ({ ...prev, engine: e.target.value as any }))}
-                              className="px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
-                            >
-                              <option value="gemini">Gemini AI</option>
-                              <option value="medical-specialized">Medical AI</option>
-                              <option value="openai" disabled>OpenAI (Coming soon)</option>
-                            </select>
+                               value={newKey.engine}
+                               onChange={(e) => setNewKey(prev => ({ ...prev, engine: e.target.value as any }))}
+                               className="px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                             >
+                               <option value="gemini">Gemini AI</option>
+                               <option value="openai" disabled>OpenAI (Coming soon)</option>
+                             </select>
                           </div>
                           <div className="relative">
                             <input 

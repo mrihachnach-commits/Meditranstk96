@@ -5,7 +5,6 @@ export class GeminiService implements TranslationService {
   private apiKeys: string[] = [];
   private modelName: string;
   private exhaustedKeys: Set<string> = new Set();
-  private systemKey: string | null = null;
   private static globalKeyLastUsed: Map<string, number> = new Map();
 
   constructor(apiKeys?: string | string[], modelName: string = "gemini-flash-latest") {
@@ -23,9 +22,6 @@ export class GeminiService implements TranslationService {
       }
     });
     
-    // System key fallback removed as per user request to only use vault keys
-    this.systemKey = null;
-    
     console.log(`[MediTrans] GeminiService: ${this.apiKeys.length} keys loaded. Model: ${modelName}`);
   }
 
@@ -34,12 +30,9 @@ export class GeminiService implements TranslationService {
   }
 
   private getBestAvailableKey(): string | null {
-    const availableKeys = [...this.apiKeys];
-    if (this.systemKey) availableKeys.push(this.systemKey);
+    if (this.apiKeys.length === 0) return null;
 
-    if (availableKeys.length === 0) return null;
-
-    const validKeys = availableKeys.filter(k => !this.exhaustedKeys.has(k));
+    const validKeys = this.apiKeys.filter(k => !this.exhaustedKeys.has(k));
     if (validKeys.length === 0) return null;
 
     validKeys.sort((a, b) => (GeminiService.globalKeyLastUsed.get(a) || 0) - (GeminiService.globalKeyLastUsed.get(b) || 0));
@@ -57,8 +50,7 @@ export class GeminiService implements TranslationService {
     await this.waitForKeyRateLimit(key);
     
     try {
-      const isSystem = key === this.systemKey;
-      console.log(`[MediTrans] Using key: ...${key.substring(key.length - 4)} (${isSystem ? 'System' : 'Vault'}) for ${this.modelName}`);
+      console.log(`[MediTrans] Using key: ...${key.substring(key.length - 4)} (Vault) for ${this.modelName}`);
       const ai = new GoogleGenAI({ apiKey: key });
       return { ai, key };
     } catch (e) {
@@ -101,14 +93,11 @@ export class GeminiService implements TranslationService {
     return this.getBestAvailableKey() !== null;
   }
 
-  async checkAvailableKeys(): Promise<{ envKey: boolean; manualKey: boolean; envKeyName?: string }> {
-    const envKey = this.systemKey;
+  async checkAvailableKeys(): Promise<{ manualKey: boolean }> {
     const manualKey = this.apiKeys[0]; 
     
     return {
-      envKey: !!envKey,
-      manualKey: !!manualKey,
-      envKeyName: envKey ? "Hệ thống (Environment)" : undefined
+      manualKey: !!manualKey
     };
   }
 
