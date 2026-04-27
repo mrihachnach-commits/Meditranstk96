@@ -275,9 +275,9 @@ export default function App() {
     }
     
     return {
-      'gemini-flash': import.meta.env.VITE_GEMINI_API_KEY || '',
-      'gemini-pro': import.meta.env.VITE_GEMINI_API_KEY || '',
-      'medical-specialized': import.meta.env.VITE_MEDICAL_API_KEY || ''
+      'gemini-flash': '',
+      'gemini-pro': '',
+      'medical-specialized': ''
     };
   });
   const [showSettings, setShowSettings] = useState(false);
@@ -2428,23 +2428,22 @@ export default function App() {
   useEffect(() => {
     const currentEngineType = selectedEngine.startsWith('gemini') ? 'gemini' : selectedEngine;
     
-    // Collect all available keys for this engine to support rotation
+    // 1. Build list of keys from vault
     let allKeys: string[] = [];
-    
-    // 1. Primary key (selected from vault or default from engineKeys)
-    let primaryKey = engineKeys[selectedEngine];
     let selectedVaultKeyName = "";
+    let primaryKey = "";
 
+    // Prioritize selected key from vault
     if (user && selectedKeyId) {
       const vaultKey = userKeys.find(k => k.id === selectedKeyId);
       if (vaultKey && vaultKey.engine === currentEngineType) {
         primaryKey = vaultKey.value;
         selectedVaultKeyName = vaultKey.name;
+        if (primaryKey) allKeys.push(primaryKey);
       }
     }
-    if (primaryKey) allKeys.push(primaryKey);
 
-    // 2. Other keys from vault for the same engine
+    // Add other compatible keys from vault for rotation
     if (user && userKeys.length > 0) {
       const otherVaultKeys = userKeys
         .filter(k => k.engine === currentEngineType && k.id !== selectedKeyId && k.status !== 'error')
@@ -2452,16 +2451,20 @@ export default function App() {
       allKeys = [...allKeys, ...otherVaultKeys];
     }
 
-    // 3. Default key from engineKeys if not already added
-    const defaultKey = engineKeys[selectedEngine];
-    if (defaultKey && !allKeys.includes(defaultKey)) {
-      allKeys.push(defaultKey);
+    // 2. Default key from localStorage (engineKeys) if no vault keys are present
+    if (allKeys.length === 0) {
+      const manualKey = engineKeys[selectedEngine];
+      if (manualKey) {
+        allKeys.push(manualKey);
+        primaryKey = manualKey;
+      }
     }
 
-    // Deduplicate
+    // Deduplicate and filter
     allKeys = Array.from(new Set(allKeys.filter(k => k && k.trim() !== "")));
     const keyString = allKeys.join(',');
 
+    // Avoid unnecessary re-initialization
     if (currentEngineRef.current === selectedEngine && currentKeyRef.current === keyString) {
       return;
     }
@@ -2469,19 +2472,23 @@ export default function App() {
     currentEngineRef.current = selectedEngine;
     currentKeyRef.current = keyString;
 
+    // Use selected vault key as primary if available
+    const serviceKey = primaryKey || (allKeys.length > 0 ? allKeys[0] : "");
+
     if (selectedEngine === 'gemini-flash') {
       translationService.current = new GeminiService(allKeys, "gemini-flash-latest");
     } else if (selectedEngine === 'gemini-pro') {
       translationService.current = new GeminiService(allKeys, "gemini-3-flash-preview");
     } else if (selectedEngine === 'medical-specialized') {
-      translationService.current = new MedicalApiService(primaryKey);
+      translationService.current = new MedicalApiService(serviceKey);
     }
 
-    // Log key initialization for debugging
+    // Enhanced logging for diagnostics
+    const vaultKeyCount = allKeys.filter(k => userKeys.some(vk => vk.value === k)).length;
     if (allKeys.length > 0) {
-      console.log(`[MediTrans AI] Initialized ${selectedEngine} with ${allKeys.length} keys. Primary vault key: ${selectedVaultKeyName || "None"}`);
+      console.log(`[MediTrans AI] Engine: ${selectedEngine} | Keys: ${allKeys.length} (${vaultKeyCount} from Vault) | Active: ${selectedVaultKeyName || "Manual/System"}`);
     } else {
-      console.log(`[MediTrans AI] Initialized ${selectedEngine} with system default key`);
+      console.warn(`[MediTrans AI] Engine: ${selectedEngine} - NO API KEYS AVAILABLE`);
     }
   }, [selectedEngine, engineKeys, user, selectedKeyId, userKeys]);
 
@@ -4621,7 +4628,7 @@ export default function App() {
                           animate={{ opacity: 1, y: 0 }}
                           className="bg-indigo-50/50 rounded-2xl p-4 border border-indigo-100 mb-4"
                         >
-                          <div className="grid grid-cols-1 gap-3 mb-3">
+                          <div className="grid grid-cols-2 gap-3 mb-3">
                             <input 
                               type="text"
                               placeholder="Tên gợi nhớ (VD: Key 1)"
@@ -4629,6 +4636,15 @@ export default function App() {
                               onChange={(e) => setNewKey(prev => ({ ...prev, name: e.target.value }))}
                               className="px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
                             />
+                            <select
+                              value={newKey.engine}
+                              onChange={(e) => setNewKey(prev => ({ ...prev, engine: e.target.value as any }))}
+                              className="px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                            >
+                              <option value="gemini">Gemini AI</option>
+                              <option value="medical-specialized">Medical AI</option>
+                              <option value="openai" disabled>OpenAI (Coming soon)</option>
+                            </select>
                           </div>
                           <div className="relative">
                             <input 

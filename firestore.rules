@@ -112,11 +112,11 @@ service cloud.firestore {
     }
 
     function isValidApiKey(data) {
-      return hasOnlyAllowedFields(['ownerId', 'sharedWith', 'name', 'value', 'engine', 'createdAt', 'lastUsed', 'status']) &&
+      return hasOnlyAllowedFields(['ownerId', 'sharedWith', 'name', 'value', 'engine', 'createdAt', 'lastUsed', 'status', 'isPublic']) &&
              data.ownerId is string &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             data.value is string && data.value.size() > 0 && data.value.size() < 500 &&
-             data.engine in ['gemini', 'openai', 'anthropic'] &&
+             data.value is string && data.value.size() > 0 && data.value.size() < 1000 &&
+             data.engine in ['gemini', 'openai', 'anthropic', 'medical-specialized'] &&
              (!('sharedWith' in data) || data.sharedWith is list) &&
              (!('status' in data) || data.status in ['active', 'error']);
     }

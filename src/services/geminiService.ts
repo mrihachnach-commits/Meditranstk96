@@ -23,19 +23,10 @@ export class GeminiService implements TranslationService {
       }
     });
     
-    // In some environments, process.env.GEMINI_API_KEY is available directly
-    // In Vite, it might be import.meta.env.VITE_GEMINI_API_KEY
-    const envKey = (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || 
-                   (typeof process !== 'undefined' && process.env?.API_KEY);
+    // System key fallback removed as per user request to only use vault keys
+    this.systemKey = null;
     
-    if (envKey && envKey.trim() !== "" && envKey !== "MY_GEMINI_API_KEY") {
-      this.systemKey = envKey;
-      if (!GeminiService.globalKeyLastUsed.has(envKey)) {
-        GeminiService.globalKeyLastUsed.set(envKey, 0);
-      }
-    }
-
-    console.log(`[MediTrans] GeminiService: ${this.apiKeys.length} keys loaded. System key: ${this.systemKey ? 'Yes' : 'No'}. Model: ${modelName}`);
+    console.log(`[MediTrans] GeminiService: ${this.apiKeys.length} keys loaded. Model: ${modelName}`);
   }
 
   private getMIN_REQUEST_INTERVAL(): number {
