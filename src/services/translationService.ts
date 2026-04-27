@@ -14,7 +14,7 @@ export interface TranslationService {
   summarizeContent?(content: string, type: 'page' | 'document' | 'chapter', signal?: AbortSignal): AsyncGenerator<string>;
 }
 
-export type TranslationEngine = 'gemini-1.5-flash' | 'gemini-1.5-pro' | 'gemini-1.5-flash-8b';
+export type TranslationEngine = 'gemini-flash' | 'gemini-pro' | 'medical-specialized';
 
 export interface EngineConfig {
   apiKey?: string;

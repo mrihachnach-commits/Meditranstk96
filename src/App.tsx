@@ -79,6 +79,7 @@ import { saveAs } from 'file-saver';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { GeminiService } from './services/geminiService';
+import { MedicalApiService } from './services/medicalApiService';
 import { TranslationEngine, TranslationService } from './services/translationService';
 import { 
   auth, 
@@ -256,7 +257,7 @@ export default function App() {
     isTranslatingRef.current = isTranslating;
   }, [isTranslating]);
   const [selectedEngine, setSelectedEngine] = useState<TranslationEngine>(() => {
-    return (localStorage.getItem('mediTrans_selectedEngine') as TranslationEngine) || 'gemini-1.5-flash';
+    return (localStorage.getItem('mediTrans_selectedEngine') as TranslationEngine) || 'gemini-flash';
   });
 
   useEffect(() => {
@@ -274,9 +275,9 @@ export default function App() {
     }
     
     return {
-      'gemini-1.5-flash': '',
-      'gemini-1.5-pro': '',
-      'gemini-1.5-flash-8b': ''
+      'gemini-flash': '',
+      'gemini-pro': '',
+      'medical-specialized': ''
     };
   });
   const [showSettings, setShowSettings] = useState(false);
@@ -2435,7 +2436,7 @@ export default function App() {
     // Prioritize selected key from vault
     if (user && selectedKeyId) {
       const vaultKey = userKeys.find(k => k.id === selectedKeyId);
-      if (vaultKey && (vaultKey.engine === 'gemini' || vaultKey.engine === selectedEngine)) {
+      if (vaultKey && vaultKey.engine === currentEngineType) {
         primaryKey = vaultKey.value;
         selectedVaultKeyName = vaultKey.name;
         if (primaryKey) allKeys.push(primaryKey);
@@ -2445,7 +2446,7 @@ export default function App() {
     // Add other compatible keys from vault for rotation
     if (user && userKeys.length > 0) {
       const otherVaultKeys = userKeys
-        .filter(k => (k.engine === 'gemini' || k.engine === selectedEngine) && k.id !== selectedKeyId && k.status !== 'error')
+        .filter(k => k.engine === currentEngineType && k.id !== selectedKeyId && k.status !== 'error')
         .map(k => k.value);
       allKeys = [...allKeys, ...otherVaultKeys];
     }
@@ -2474,12 +2475,12 @@ export default function App() {
     // Use selected vault key as primary if available
     const serviceKey = primaryKey || (allKeys.length > 0 ? allKeys[0] : "");
 
-    if (selectedEngine === 'gemini-1.5-flash') {
-      translationService.current = new GeminiService(allKeys, "gemini-1.5-flash-latest");
-    } else if (selectedEngine === 'gemini-1.5-pro') {
-      translationService.current = new GeminiService(allKeys, "gemini-1.5-pro-latest");
-    } else if (selectedEngine === 'gemini-1.5-flash-8b') {
-      translationService.current = new GeminiService(allKeys, "gemini-1.5-flash-8b-latest");
+    if (selectedEngine === 'gemini-flash') {
+      translationService.current = new GeminiService(allKeys, "gemini-flash-latest");
+    } else if (selectedEngine === 'gemini-pro') {
+      translationService.current = new GeminiService(allKeys, "gemini-3-flash-preview");
+    } else if (selectedEngine === 'medical-specialized') {
+      translationService.current = new MedicalApiService(serviceKey);
     }
 
     // Enhanced logging for diagnostics
@@ -4488,11 +4489,11 @@ export default function App() {
                     </label>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
-                    {(['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'] as TranslationEngine[]).map((engine) => {
+                    {(['gemini-flash', 'gemini-pro', 'medical-specialized'] as TranslationEngine[]).map((engine) => {
                       const labels: Record<string, string> = {
-                        'gemini-1.5-flash': 'Flash 1.5',
-                        'gemini-1.5-pro': 'Pro 1.5',
-                        'gemini-1.5-flash-8b': '8B 1.5'
+                        'gemini-flash': 'Gemini Flash',
+                        'gemini-pro': 'Gemini Pro',
+                        'medical-specialized': 'Medical AI'
                       };
                       return (
                         <button
@@ -4640,10 +4641,9 @@ export default function App() {
                               onChange={(e) => setNewKey(prev => ({ ...prev, engine: e.target.value as any }))}
                               className="px-3 py-2 bg-white border border-indigo-100 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
                             >
-                              <option value="gemini">Cho tất cả Gemini</option>
-                              <option value="gemini-1.5-flash">Chỉ Gemini 1.5 Flash</option>
-                              <option value="gemini-1.5-pro">Chỉ Gemini 1.5 Pro</option>
-                              <option value="gemini-1.5-flash-8b">Chỉ Gemini 1.5 Flash-8B</option>
+                              <option value="gemini">Gemini AI</option>
+                              <option value="medical-specialized">Medical AI</option>
+                              <option value="openai" disabled>OpenAI (Coming soon)</option>
                             </select>
                           </div>
                           <div className="relative">
