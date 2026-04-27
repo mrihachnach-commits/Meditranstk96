@@ -671,7 +671,10 @@ export default function App() {
 
       if (user && userKeys.length > 0) {
         const currentEngineType = selectedEngine.startsWith('gemini') ? 'gemini' : selectedEngine;
-        const vaultKeysToCheck = userKeys.filter(k => k.engine === currentEngineType);
+        const vaultKeysToCheck = userKeys.filter(k => {
+          const vEng = (k.engine || 'gemini').toLowerCase();
+          return vEng === currentEngineType || vEng === 'gemini' || vEng.includes('gemini');
+        });
         
         // Run checks in parallel
         const checkPromises = vaultKeysToCheck.map(async (vKey) => {
@@ -888,11 +891,11 @@ export default function App() {
       handleFirestoreError(error, OperationType.GET, 'apiKeys');
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isLocalOnly]);
 
   useEffect(() => {
     const userEmail = user?.email?.trim().toLowerCase();
-    if (!user || !userEmail) {
+    if (!user || !userEmail || isLocalOnly) {
       setSharedKeys([]);
       return;
     }
@@ -911,7 +914,7 @@ export default function App() {
       console.error("Error fetching shared keys:", error);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isLocalOnly]);
 
   useEffect(() => {
     const combined = [...ownedKeys];
@@ -930,7 +933,7 @@ export default function App() {
     } else {
       setSelectedKeyId(null);
     }
-  }, [ownedKeys, sharedKeys]);
+  }, [ownedKeys, sharedKeys, selectedKeyId]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2441,6 +2444,14 @@ export default function App() {
   useEffect(() => {
     const currentEngineType = selectedEngine.startsWith('gemini') ? 'gemini' : selectedEngine;
     
+    // Enhanced logging for diagnostics
+    console.log(`[MediTrans AI] Syncing keys for engine: ${selectedEngine}. UserKeys count: ${userKeys.length}`);
+    
+    // Enhanced logging for chuyển đổi key
+    if (userKeys.length > 0) {
+      console.log(`[MediTrans AI] Processing Vault Keys:`, userKeys.map(k => ({ id: k.id, name: k.name, engine: k.engine })));
+    }
+    
     // 1. Build list of keys from vault
     let allKeys: string[] = [];
     let selectedVaultKeyName = "";
@@ -2449,12 +2460,19 @@ export default function App() {
     // Prioritize selected key from vault
     if (user && selectedKeyId) {
       const vaultKey = userKeys.find(k => k.id === selectedKeyId);
-      // Robust engine check: default to 'gemini' if missing, handle case variations
-      const vaultEngine = (vaultKey?.engine || 'gemini').toLowerCase();
-      if (vaultKey && (vaultEngine === currentEngineType || vaultEngine === 'gemini')) {
-        primaryKey = vaultKey.value;
-        selectedVaultKeyName = vaultKey.name;
-        if (primaryKey) allKeys.push(primaryKey);
+      if (vaultKey) {
+        const vaultEngine = (vaultKey.engine || 'gemini').toLowerCase();
+        const isGeminiMatch = vaultEngine === 'gemini' || vaultEngine.includes('gemini') || vaultEngine.includes('flash') || vaultEngine.includes('pro');
+        const engineMatches = vaultEngine === currentEngineType || (currentEngineType === 'gemini' && isGeminiMatch);
+        
+        if (engineMatches) {
+          primaryKey = vaultKey.value;
+          selectedVaultKeyName = vaultKey.name;
+          if (primaryKey) allKeys.push(primaryKey);
+          console.log(`[MediTrans AI] Selected primary key from vault: ${vaultKey.name}`);
+        } else {
+          console.warn(`[MediTrans AI] Selected key ${vaultKey.name} (engine: ${vaultKey.engine}) does not match current engine ${selectedEngine}`);
+        }
       }
     }
 
@@ -2463,9 +2481,15 @@ export default function App() {
       const otherVaultKeys = userKeys
         .filter(k => {
           const vEng = (k.engine || 'gemini').toLowerCase();
-          return (vEng === currentEngineType || vEng === 'gemini') && k.id !== selectedKeyId && k.status !== 'error';
+          const isGeminiMatch = vEng === 'gemini' || vEng.includes('gemini') || vEng.includes('flash') || vEng.includes('pro');
+          const engineMatches = vEng === currentEngineType || (currentEngineType === 'gemini' && isGeminiMatch);
+          return engineMatches && k.id !== selectedKeyId && k.status !== 'error';
         })
         .map(k => k.value);
+      
+      if (otherVaultKeys.length > 0) {
+        console.log(`[MediTrans AI] Found ${otherVaultKeys.length} additional compatible keys in vault`);
+      }
       allKeys = [...allKeys, ...otherVaultKeys];
     }
 
