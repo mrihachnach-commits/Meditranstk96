@@ -873,36 +873,56 @@ export default function App() {
     }
   }, [user, isAuthReady, hasDoneInitialCheck]);
 
+  const [ownedKeys, setOwnedKeys] = useState<any[]>([]);
+  const [sharedKeys, setSharedKeys] = useState<any[]>([]);
+
   useEffect(() => {
-    if (user) {
-      const path = 'apiKeys';
-      const userEmail = user.email ? user.email.toLowerCase() : '';
-      const q = query(
-        collection(db, 'apiKeys'), 
-        or(
-          where('ownerId', '==', user.uid),
-          where('sharedWith', 'array-contains', userEmail)
-        )
-      );
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setUserKeys(keys);
-        
-        // Auto-select first key if none selected OR current selected key is not in the new keys list
-        if (keys.length > 0) {
-          if (!selectedKeyId || !keys.find(k => k.id === selectedKeyId)) {
-            setSelectedKeyId(keys[0].id);
-          }
-        }
-      }, (error) => {
-        handleFirestoreError(error, OperationType.GET, path);
-      });
-      return () => unsubscribe();
+    if (!user) {
+      setOwnedKeys([]);
+      return;
+    }
+    const q = query(collection(db, 'apiKeys'), where('ownerId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setOwnedKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'apiKeys');
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    const userEmail = user?.email?.trim().toLowerCase();
+    if (!user || !userEmail) {
+      setSharedKeys([]);
+      return;
+    }
+    const q = query(collection(db, 'apiKeys'), where('sharedWith', 'array-contains', userEmail));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setSharedKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      console.error("Error fetching shared keys:", error);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    const combined = [...ownedKeys];
+    sharedKeys.forEach(sk => {
+      if (!combined.find(k => k.id === sk.id)) {
+        combined.push(sk);
+      }
+    });
+    
+    setUserKeys(combined);
+    
+    if (combined.length > 0) {
+      if (!selectedKeyId || !combined.find(k => k.id === selectedKeyId)) {
+        setSelectedKeyId(combined[0].id);
+      }
     } else {
-      setUserKeys([]);
       setSelectedKeyId(null);
     }
-  }, [user]);
+  }, [ownedKeys, sharedKeys]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2436,8 +2456,9 @@ export default function App() {
       allKeys = [...allKeys, ...otherVaultKeys];
     }
 
-    // 2. Default key from localStorage (engineKeys) if no vault keys are present
-    if (allKeys.length === 0) {
+    // 2. ONLY use keys from vault if user is logged in
+    // This satisfies the request to stop using system keys completely
+    if (allKeys.length === 0 && !user) {
       const manualKey = engineKeys[selectedEngine];
       if (manualKey) {
         allKeys.push(manualKey);
@@ -3025,19 +3046,7 @@ export default function App() {
               </div>
 
               <div className="space-y-3">
-                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100">
-                  <div className="flex items-center gap-3">
-                    <ShieldCheck className={cn("w-4 h-4", keyCheckResults.envKey ? "text-emerald-500" : "text-slate-300")} />
-                    <span className="text-xs font-bold text-slate-700">Key Hệ thống (Environment)</span>
-                  </div>
-                  {keyCheckResults.envKey ? (
-                    <span className="px-2 py-1 bg-emerald-100 text-emerald-600 text-[10px] font-black rounded-lg uppercase tracking-tighter">Kết nối thành công</span>
-                  ) : (
-                    <span className="px-2 py-1 bg-slate-200 text-slate-500 text-[10px] font-black rounded-lg uppercase tracking-tighter">Không khả dụng</span>
-                  )}
-                </div>
-
-                {(keyCheckResults.manualKey || keyCheckResults.isVaultKey) && (
+                {(keyCheckResults.manualKey || keyCheckResults.isVaultKey) ? (
                   <div className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100">
                     <div className="flex items-center gap-3">
                       <Key className={cn("w-4 h-4", (keyCheckResults.manualKey) ? "text-emerald-500" : "text-slate-300")} />
@@ -3050,6 +3059,10 @@ export default function App() {
                     ) : (
                       <span className="px-2 py-1 bg-rose-100 text-rose-600 text-[10px] font-black rounded-lg uppercase tracking-tighter">Lỗi kết nối</span>
                     )}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center p-8 bg-slate-50 rounded-2xl border border-slate-100 border-dashed">
+                    <p className="text-xs text-slate-400 italic">Không tìm thấy Key nào đang được kích hoạt</p>
                   </div>
                 )}
               </div>
@@ -4545,9 +4558,13 @@ export default function App() {
                     )}
                   </div>
                   <div className="mt-2 p-3 bg-indigo-50 rounded-lg border border-indigo-100">
-                    <p className="text-[10px] text-indigo-700 leading-relaxed">
+                    <p className="text-[10px] text-indigo-700 leading-relaxed mb-2">
                       Sử dụng các Key từ kho lưu trữ (Vault) bên dưới để dịch tài liệu. Các Key sẽ tự động luân phiên khi hết hạn mức.
                     </p>
+                    <div className="flex items-center gap-1.5 px-2 py-1 bg-white border border-indigo-100 rounded-lg">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase">Email của bạn:</span>
+                      <span className="text-[10px] font-black text-indigo-600 truncate">{user.email}</span>
+                    </div>
                   </div>
                 </div>
                 
