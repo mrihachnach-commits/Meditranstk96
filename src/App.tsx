@@ -1054,6 +1054,16 @@ export default function App() {
     }
   };
 
+  const handleApiResponse = async (response: Response) => {
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      console.error("Non-JSON API response:", text);
+      throw new Error(`Lỗi phản hồi từ máy chủ (${response.status}): ${text.substring(0, 100)}`);
+    }
+  };
+
   const fetchAllUsers = async () => {
     if (userRole !== 'admin' || !user) return;
     setIsFetchingUsers(true);
@@ -1089,7 +1099,7 @@ export default function App() {
         });
         
         if (response.ok) {
-          const data = await response.json();
+          const data = await handleApiResponse(response);
           if (data.success && data.users) {
             setAuthSyncError(data.authSyncError || null);
             setApiActivationLink(data.apiLink || null);
@@ -1102,7 +1112,7 @@ export default function App() {
           }
         }
       } catch (adminError) {
-        console.warn("Admin API enrichment failed (expected if API/Permissions not set):", adminError);
+        console.warn("Admin API enrichment failed:", adminError);
       }
     } catch (e: any) {
       console.error("Failed to fetch users from Firestore:", e);
@@ -1136,7 +1146,7 @@ export default function App() {
         body: JSON.stringify(userData)
       });
       
-      const data = await response.json();
+      const data = await handleApiResponse(response);
       
       if (response.ok && data.success) {
         // If server-side DB write failed, try from client (Admin has permission)
@@ -1209,7 +1219,7 @@ export default function App() {
         },
         body: JSON.stringify({ uid, newPassword })
       });
-      const data = await response.json();
+      const data = await handleApiResponse(response);
       if (data.success) {
         showToast("Đã đổi mật khẩu thành công", 'success');
         return true;

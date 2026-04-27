@@ -9,39 +9,63 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load firebase config
-const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-if (!fs.existsSync(configPath)) {
-  console.error("CRITICAL: firebase-applet-config.json not found at", configPath);
-  console.log("Current directory:", process.cwd());
-  console.log("Files in current directory:", fs.readdirSync(process.cwd()));
-  throw new Error("firebase-applet-config.json missing. Please ensure it is uploaded to Vercel.");
+let firebaseConfig: any;
+try {
+  const configPaths = [
+    path.join(process.cwd(), "firebase-applet-config.json"),
+    path.join(__dirname, "firebase-applet-config.json"),
+    path.join(__dirname, "..", "firebase-applet-config.json"),
+    "/var/task/firebase-applet-config.json"
+  ];
+  
+  let configContent = null;
+  for (const p of configPaths) {
+    if (fs.existsSync(p)) {
+      console.log("Found firebase config at:", p);
+      configContent = fs.readFileSync(p, "utf8");
+      break;
+    }
+  }
+
+  if (!configContent) {
+    console.warn("firebase-applet-config.json not found in common paths. Checking current directory...");
+    const files = fs.readdirSync(process.cwd());
+    if (files.includes("firebase-applet-config.json")) {
+      configContent = fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8");
+    }
+  }
+
+  if (!configContent) {
+    throw new Error("firebase-applet-config.json missing. Please ensure it is uploaded to Vercel.");
+  }
+  
+  firebaseConfig = JSON.parse(configContent);
+} catch (err: any) {
+  console.error("CRITICAL Error loading firebase config:", err.message);
+  // We'll catch this later in the serverless handler
+  firebaseConfig = { error: err.message };
 }
-const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
 // Set environment variables for firebase-admin
-process.env.GOOGLE_CLOUD_PROJECT = firebaseConfig.projectId;
+if (firebaseConfig.projectId) {
+  process.env.GOOGLE_CLOUD_PROJECT = firebaseConfig.projectId;
+}
 
 // Initialize Firebase Admin (for token verification and administrative tasks)
-/**
- * CRITICAL: We initialize without a name first to use the default app context,
- * which is most reliable for ADC (Application Default Credentials).
- */
-let adminApp: admin.app.App;
-try {
-  if (admin.apps.length === 0) {
-    adminApp = admin.initializeApp({ 
-      projectId: firebaseConfig.projectId 
-    });
-    console.log(`Firebase Admin initialized (Default App) for project: ${firebaseConfig.projectId}`);
-  } else {
-    adminApp = admin.apps[0]!;
-    console.log(`Using existing Firebase Admin app: ${adminApp.name}`);
+let adminApp: admin.app.App | null = null;
+if (!firebaseConfig.error) {
+  try {
+    if (admin.apps.length === 0) {
+      adminApp = admin.initializeApp({ 
+        projectId: firebaseConfig.projectId 
+      });
+      console.log(`Firebase Admin initialized for project: ${firebaseConfig.projectId}`);
+    } else {
+      adminApp = admin.apps[0]!;
+    }
+  } catch (e: any) {
+    console.error("Failed to initialize Firebase Admin:", e.message);
   }
-} catch (e: any) {
-  console.error("Failed to initialize Firebase Admin:", e.message);
-  // Fallback to a named app if default fails
-  const appName = "admin-fallback";
-  adminApp = admin.apps.find(app => app?.name === appName) || admin.initializeApp({ projectId: firebaseConfig.projectId }, appName);
 }
 
 // Initialize Firestore Helper using REST API
@@ -163,9 +187,24 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Middleware to check if user is admin
-  const checkAdmin = async (req: any, res: any, next: any) => {
-    const authHeader = req.headers.authorization;
+   // Middleware to check if user is admin
+   const checkAdmin = async (req: any, res: any, next: any) => {
+     if (firebaseConfig.error) {
+       console.error("[Admin Check] Configuration error:", firebaseConfig.error);
+       return res.status(500).json({ 
+         error: "Dịch vụ chưa được cấu hình đúng.", 
+         details: firebaseConfig.error 
+       });
+     }
+
+     if (!firebaseConfig.apiKey) {
+       console.error("[Admin Check] API Key is missing from config");
+       return res.status(500).json({ 
+         error: "Thiếu Firebase API Key trong cấu hình." 
+       });
+     }
+
+     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Unauthorized" });
     }
@@ -602,6 +641,28 @@ async function startServer() {
 const serverPromise = startServer();
 
 export default async (req: any, res: any) => {
-  const app = await serverPromise;
-  return app(req, res);
+  try {
+    const app = await serverPromise;
+    
+    // Check if configuration failed during initialization
+    if (firebaseConfig.error) {
+      console.error("Serverless handler invoked but config is invalid:", firebaseConfig.error);
+      if (req.url.startsWith("/api/")) {
+        return res.status(500).json({ 
+          error: "Server configuration error", 
+          details: firebaseConfig.error,
+          env: process.env.NODE_ENV
+        });
+      }
+    }
+    
+    return app(req, res);
+  } catch (error: any) {
+    console.error("Vercel serverless function crashed:", error);
+    res.status(500).json({ 
+      error: "Internal Server Error", 
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
 };
