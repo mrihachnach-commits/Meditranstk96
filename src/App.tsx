@@ -896,9 +896,17 @@ export default function App() {
       setSharedKeys([]);
       return;
     }
-    const q = query(collection(db, 'apiKeys'), where('sharedWith', 'array-contains', userEmail));
+    
+    console.log(`[MediTrans] Listening for shared keys for: ${userEmail}`);
+    const q = query(
+      collection(db, 'apiKeys'), 
+      where('sharedWith', 'array-contains', userEmail)
+    );
+    
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setSharedKeys(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      console.log(`[MediTrans] Found ${keys.length} shared keys`);
+      setSharedKeys(keys);
     }, (error) => {
       console.error("Error fetching shared keys:", error);
     });
@@ -2441,7 +2449,9 @@ export default function App() {
     // Prioritize selected key from vault
     if (user && selectedKeyId) {
       const vaultKey = userKeys.find(k => k.id === selectedKeyId);
-      if (vaultKey && vaultKey.engine === currentEngineType) {
+      // Robust engine check: default to 'gemini' if missing, handle case variations
+      const vaultEngine = (vaultKey?.engine || 'gemini').toLowerCase();
+      if (vaultKey && (vaultEngine === currentEngineType || vaultEngine === 'gemini')) {
         primaryKey = vaultKey.value;
         selectedVaultKeyName = vaultKey.name;
         if (primaryKey) allKeys.push(primaryKey);
@@ -2451,14 +2461,18 @@ export default function App() {
     // Add other compatible keys from vault for rotation
     if (user && userKeys.length > 0) {
       const otherVaultKeys = userKeys
-        .filter(k => k.engine === currentEngineType && k.id !== selectedKeyId && k.status !== 'error')
+        .filter(k => {
+          const vEng = (k.engine || 'gemini').toLowerCase();
+          return (vEng === currentEngineType || vEng === 'gemini') && k.id !== selectedKeyId && k.status !== 'error';
+        })
         .map(k => k.value);
       allKeys = [...allKeys, ...otherVaultKeys];
     }
 
-    // 2. ONLY use keys from vault if user is logged in
-    // This satisfies the request to stop using system keys completely
-    if (allKeys.length === 0 && !user) {
+    // 2. Fallback to manual/system key ONLY if no vault keys are found
+    // This allows fallback if vault hasn't loaded or user has no keys,
+    // but prioritized vault keys if they exist.
+    if (allKeys.length === 0) {
       const manualKey = engineKeys[selectedEngine];
       if (manualKey) {
         allKeys.push(manualKey);
@@ -4561,9 +4575,14 @@ export default function App() {
                     <p className="text-[10px] text-indigo-700 leading-relaxed mb-2">
                       Sử dụng các Key từ kho lưu trữ (Vault) bên dưới để dịch tài liệu. Các Key sẽ tự động luân phiên khi hết hạn mức.
                     </p>
-                    <div className="flex items-center gap-1.5 px-2 py-1 bg-white border border-indigo-100 rounded-lg">
-                      <span className="text-[9px] font-bold text-slate-500 uppercase">Email của bạn:</span>
-                      <span className="text-[10px] font-black text-indigo-600 truncate">{user.email}</span>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-1.5 px-2 py-1 bg-white border border-indigo-100 rounded-lg">
+                        <span className="text-[9px] font-bold text-slate-500 uppercase whitespace-nowrap">Tài khoản:</span>
+                        <span className="text-[10px] font-black text-indigo-600 truncate">{user.email}</span>
+                      </div>
+                      <p className="text-[8px] text-slate-400 italic px-1">
+                        Khả dụng: {userKeys.length} keys ({userKeys.filter(k => k.ownerId !== user.uid).length} shared)
+                      </p>
                     </div>
                   </div>
                 </div>
